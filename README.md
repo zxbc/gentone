@@ -45,9 +45,16 @@ picker is the only way to mute. While muted the chip reads `♪ off`.
   `message.delta`, `thinking.delta`, `reasoning.delta` (all carry payload
   `.text`), `message.complete`, and `error`.
 - **Speed** — chars streamed over a rolling 700 ms window (text **and**
-  thinking tokens) → chars/sec, log-mapped and EMA-smoothed onto the selected
-  scale's ladder. `MIN_CPS` (6) maps to the lowest degree, `MAX_CPS` (100) to
-  the top.
+  thinking tokens) → chars/sec, EMA-smoothed onto the selected scale's
+  ladder via the dynamic mapping below.
+- **Dynamic speed → pitch mapping** — the pitch bounds are no longer fixed:
+  each tick records the smoothed cps into a rolling `RANGE_WINDOW_MS` (16 s)
+  history, and every `REMAP_INTERVAL_MS` (8 s ≈ 2 phrases) the min/max of that
+  history are fitted across the whole three-octave ladder. A steady tps band
+  therefore still spans all three octaves instead of hovering on one note.
+  `MIN_SPAN_LOG2` keeps a very steady stream from becoming hypersensitive and
+  `RANGE_PAD` keeps the top and bottom degrees reachable; a new stream resets
+  to the initial `MIN_CPS`/`MAX_CPS` bounds.
 - **Melodic wander** — each streaming note random-walks ±`WANDER` (2) scale
   degrees around the speed-mapped pitch, so steady generation wanders
   melodically instead of holding one note. Switching scales re-anchors the
@@ -75,15 +82,23 @@ picker is the only way to mute. While muted the chip reads `♪ off`.
   Each note that fires still gets its pitch from the stream-speed mechanics
   above, so the rhythm varies but the melody follows generation.
 - **No stacking** — each chirp's envelope (`NOTE_LEN_MS` = 70 ms) stays
-  shorter than the *shortest possible note spacing* (one slot = 250 ms), so
+  shorter than the *shortest possible note spacing* (one slot = 125 ms), so
   notes physically cannot overlap or queue. When the last stream ends the
   scheduler stops and the master gain fades in ~30 ms — no trailing notes.
+- **Pause "interlude" beat** — while a stream is active but no tokens flow
+  for `STALE_MS` (tool calls, waits), the same wall-clock-locked rhythm keeps
+  playing as a static-frequency hat-like beat at `BEAT_FREQ` (1200 Hz) instead
+  of silence — an interlude at the same tempo and placement complexity as the
+  notes, using the same chirp synthesis with the note choice removed. The
+  instant tokens resume the speed-mapped notes take over again; when the
+  stream fully ends the beat stops with everything else (nothing plays after
+  `message.complete`).
 - **Thinking at reduced volume** — thinking/reasoning tokens
   (`thinking.delta` / `reasoning.delta`) feed the same speed window and play
   the same speed-mapped, wandering notes at `THINKING_VOLUME` (~70% of
   `VOLUME`). The latest token type decides the volume class, so the transition
-  is instant. Gaps with no tokens at all (tool calls, waits) are silent once
-  `STALE_MS` (900 ms) pass.
+  the transition is instant. Gaps with no tokens at all (tool calls, waits)
+  switch to the pause "interlude" beat once `STALE_MS` (900 ms) pass.
 - **Any session** — notes play while *any* session streams, focused or not
   (the tab being hidden also silences notes).
 - **Hot-reload safe** — a global engine guard disposes the previous module's
@@ -99,14 +114,19 @@ picker is the only way to mute. While muted the chip reads `♪ off`.
 | `MINOR_PENTA` | `[0,3,5,…,34]` | semitone offsets, 3-octave minor pentatonic (15 degrees) |
 | `MAJOR` | `[0,2,4,…,35]` | semitone offsets, 3-octave major (21 degrees) |
 | `PHRYGIAN_DOM` | `[0,1,4,…,34]` | semitone offsets, 3-octave phrygian dominant (21 degrees) |
-| `NOTE_LEN_MS` | 70 | chirp length — keep ≤ 250 ms (one rhythm slot) |
+| `NOTE_LEN_MS` | 70 | chirp length — keep ≤ 125 ms (one rhythm slot) |
+| `BEAT_FREQ` | 1200 | Hz of the static-frequency pause "interlude" beat (hat-like) |
 | `RHYTHM_PERIOD_MS` | 4000 | fixed phrase length — every phrase is exactly this long |
-| `RHYTHM_BARS` / `RHYTHM_SLOTS` | 8 / 16 | bars per phrase, and placement resolution (eighth notes) |
-| `RHYTHM_MIN_NOTES` / `RHYTHM_MAX_NOTES` | 5 / 9 | random note count range per phrase |
+| `RHYTHM_BARS` / `RHYTHM_SLOTS` | 8 / 32 | bars per phrase, and placement resolution (sixteenth notes) |
+| `RHYTHM_MIN_NOTES` / `RHYTHM_MAX_NOTES` | 10 / 18 | random note count range per phrase |
 | `RHYTHM_DOWNBEAT_WEIGHT` | 3 | bar starts weigh this much more than offbeats when placing notes |
 | `WINDOW_MS` | 700 | speed rolling window |
-| `MIN_CPS` / `MAX_CPS` | 6 / 100 | chars/sec spanned by the scale ladder |
-| `STALE_MS` | 900 | token gap before silence (tool calls / waits) |
+| `MIN_CPS` / `MAX_CPS` | 6 / 100 | initial mapping bounds until samples arrive (see dynamic range below) |
+| `RANGE_WINDOW_MS` | 16000 | rolling cps history used to estimate the speed range |
+| `REMAP_INTERVAL_MS` | 8000 | how often the dynamic pitch bounds are recomputed (~2 phrases) |
+| `MIN_SPAN_LOG2` | 0.5 | min span the dynamic mapping covers (sensitivity floor) |
+| `RANGE_PAD` | 0.10 | bounds padded outward by this fraction of the span |
+| `STALE_MS` | 900 | token gap before notes switch to the pause "interlude" beat |
 | `EMA` | 0.3 | pitch smoothing (1 = none, 0 = frozen) |
 | `WANDER` | 2 | ±scale degrees of pitch variation around the mapped note |
 | `JITTER_PROB` | 0.2 | per-note chance a smooth jitter starts (constant throughout, not monotony-based) |

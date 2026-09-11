@@ -40,6 +40,11 @@
 //   - Thinking/reasoning tokens (thinking.delta / reasoning.delta) play the
 //     same speed-mapped notes at reduced volume (THINKING_VOLUME ≈ 70% of
 //     VOLUME), so the thinking phase is audible but quieter than the answer.
+//   - While a stream is active but tokens have stopped flowing (tool calls,
+//     waits — no delta for STALE_MS), the same rhythm keeps playing as a
+//     static-frequency hat-like beat (BEAT_FREQ) instead of silence — an
+//     interlude. The instant tokens resume it's back to the speed-mapped
+//     notes; when the stream fully ends it stops with everything else.
 //   - When the last stream ends, the scheduler stops and the master volume
 //     fades out in ~30ms — no trailing notes, no delay.
 // ============================================================================
@@ -72,6 +77,7 @@ const SCALES = [
 const DEFAULT_SCALE_ID = 'blues'
 
 const NOTE_LEN_MS = 70           // chirp length (< shortest possible note spacing: 125 ms)
+const BEAT_FREQ = 1200           // Hz of the static-frequency "interlude" beat — hat-like, kept mid-range so it isn't harsh
 const RHYTHM_PERIOD_MS = 4000    // fixed phrase length — every phrase is exactly this long
 const RHYTHM_BARS = 8            // bars per phrase (each bar = 500 ms)
 const RHYTHM_SLOTS = 32          // placement resolution (sixteenth notes: 4 slots per bar)
@@ -172,10 +178,22 @@ function noteFreq(degree) {
 /** Play one short chirp at the given scale degree. Envelope is attack-then-decay
  *  and shorter than the scheduler interval, so notes never overlap. */
 function playNote(degree, vol = VOLUME) {
+  playChirp(noteFreq(degree), vol)
+}
+
+/** Play one short chirp at a fixed frequency — the same synthesis as a note,
+ *  minus the scale mapping. Used by the pause "interlude" beat. */
+function playBeat(vol = VOLUME) {
+  playChirp(BEAT_FREQ, vol)
+}
+
+/** Shared chirp synthesis: two detuned sine oscillators through a short
+ *  attack-then-decay envelope, shorter than the scheduler interval so sounds
+ *  never overlap. */
+function playChirp(f, vol) {
   const ac = ensureAudio()
   if (!ac || !master) return
   const t = ac.currentTime
-  const f = noteFreq(degree)
 
   master.gain.setValueAtTime(vol, t) // restore bus at this note's volume (faded on stop)
 
@@ -352,12 +370,16 @@ function tick() {
   // overshot one or more slots — e.g. a long token gap — skip them so the
   // phrase stays locked to the grid.)
   while (rhythmIndex < rhythmSlots.length && now >= rhythmAnchor + rhythmSlots[rhythmIndex] * SLOT_MS) {
-    // Chirp while a stream is active and tokens are flowing. Pitch tracks the
-    // speed-mapped degree (±WANDER ±smooth-jitter) for both text and thinking.
-    // Thinking tokens feed the same speed window; we just play them at reduced
-    // volume so the "thinking" phase is audible but quieter. No tokens for
-    // STALE_MS (tool calls / waits) → silence.
-    if (generating > 0 && !document.hidden && now - lastDeltaAt <= STALE_MS) {
+    // Chirp while a stream is active. Pitch tracks the speed-mapped degree
+    // (±WANDER ±smooth-jitter) for both text and thinking; thinking tokens feed
+    // the same speed window and just play at reduced volume. If tokens stop
+    // flowing for STALE_MS (tool calls / waits) the same rhythm continues as a
+    // static-frequency "interlude" beat until tokens resume — or the stream
+    // ends (generating === 0 silences everything, and stopStreaming fades it).
+    if (generating > 0 && !document.hidden && now - lastDeltaAt > STALE_MS) {
+      resumeAudio()
+      playBeat(inThinking ? THINKING_VOLUME : VOLUME)
+    } else if (generating > 0 && !document.hidden) {
       resumeAudio()
       wander = Math.max(-WANDER, Math.min(WANDER, wander + (Math.random() * 2 - 1)))
 
