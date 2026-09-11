@@ -3,21 +3,22 @@
 A [Hermes Desktop Plugin](https://hermes-agent.nousresearch.com/docs/developer-guide/desktop-plugin-sdk)
 (single ESM file, `@hermes/plugin-sdk`). While the agent streams text, it emits
 short robotic chirps whose pitch follows the generation speed, quantized to a
-three-octave scale ladder starting at A3 (220 Hz). Faster generation → higher
-notes, slower → lower, so the tempo of the model paints a melody in the scale.
-While the model is "thinking", the same speed-mapped notes continue at reduced
-volume (~70%), so the thinking phase sounds like the answer but quieter. Sound
-stops the moment the last stream ends.
+three-octave scale ladder starting at C4 (261.63 Hz). Faster generation →
+higher notes, slower → lower, so the tempo of the model paints a melody in the
+scale. While the model is "thinking", the same speed-mapped notes continue at
+reduced volume (~70%), so the thinking phase sounds like the answer but
+quieter. Sound stops the moment the last stream ends.
 
-Four scales are selectable from the status-bar chip, defaulting to **Blues**:
+Four scales are selectable from the status-bar chip, all rooted at C and
+defaulting to **Blues**:
 
-- **Blues** (A minor blues) — A · C · D · E♭ · E · G — 18 degrees
-- **Pentatonic** (minor pentatonic) — A · C · D · E · G — 15 degrees
-- **Major** — A · B · C · D · E · F · G — 21 degrees
-- **Phrygian Dominant** (1–♭2–3–4–5–♭6–♭7) — A · B♭ · C♯ · D · E · F · G — 21 degrees
+- **Blues** (C minor blues) — C · E♭ · F · F♯ · G · B♭ — 18 degrees
+- **Pentatonic** (C minor pentatonic) — C · E♭ · F · G · B♭ — 15 degrees
+- **Major** (C major) — C · D · E · F · G · A · B — 21 degrees
+- **Phrygian Dominant** (1–♭2–3–4–5–♭6–♭7) — C · D♭ · E · F · G · A♭ · B♭ — 21 degrees
 
-Every ladder spans exactly three octaves; Blues/Pentatonic/Phrygian top out at
-A6 (≈1568 Hz) and Major at B6 (≈1661 Hz).
+Every ladder spans three octaves from the C root; Blues/Pentatonic/Phrygian
+top out at B♭6 (≈1865 Hz) and Major at C7 (≈1976 Hz).
 
 ## Install
 
@@ -82,7 +83,7 @@ picker is the only way to mute. While muted the chip reads `♪ off`.
 
 | Constant | Default | Meaning |
 | --- | --- | --- |
-| `ROOT_FREQ` | 220 | Hz of scale degree 0 (A3) |
+| `ROOT_FREQ` | 261.63 | Hz of scale degree 0 (C4) |
 | `MINOR_BLUES` | `[0,3,5,…,34]` | semitone offsets, 3-octave minor blues (18 degrees) |
 | `MINOR_PENTA` | `[0,3,5,…,34]` | semitone offsets, 3-octave minor pentatonic (15 degrees) |
 | `MAJOR` | `[0,2,4,…,35]` | semitone offsets, 3-octave major (21 degrees) |
@@ -110,7 +111,7 @@ picker is the only way to mute. While muted the chip reads `♪ off`.
   extra deps, no imports beyond `@hermes/plugin-sdk`, `react`,
   `react/jsx-runtime`).
 - Verified: JS syntax (`node --check`), and all four scale ladders parse from
-  the source as monotonically ascending from 220 Hz to ≈1568–1661 Hz.
+  the source as monotonically ascending from C4 (261.63 Hz) to ≈1865–1976 Hz.
   Not yet runtime-tested on a real desktop app instance — that's the
   copy-and-try step on your side. If the chip never appears or JS errors,
   check `hermes logs gui -f` and the app's error toast.

@@ -16,7 +16,7 @@
 //     actually played, so the rhythm feels steady in groups of 8.
 //   - Generation speed = all streamed chars (text AND thinking tokens) over a
 //     rolling WINDOW_MS window. That rate (EMA-smoothed, log-mapped) picks the
-//     pitch from the selected scale's 3-octave ladder — A minor blues by
+//     pitch from the selected scale's 3-octave ladder — C minor blues by
 //     default, or minor pentatonic, major, or phrygian dominant, chosen from
 //     the ♪ chip's popover (see SCALES below). Faster stream → higher scale
 //     degree, so the speed variations paint a melody in the scale. Each
@@ -41,21 +41,21 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 import { useEffect, useRef, useState } from 'react'
 
 // ------------------------------ tunables -----------------------------------
-const ROOT_FREQ = 220            // Hz of scale degree 0 (A3)
+const ROOT_FREQ = 261.63         // Hz of scale degree 0 (C4)
 
 // 3-octave scale ladders (semitone offsets from the root, ascending). Every
 // scale ends exactly two octaves above its first note, so the top degree maps
 // to the same ceiling note across scales.
-const MINOR_BLUES = [0, 3, 5, 6, 7, 10, 12, 15, 17, 18, 19, 22, 24, 27, 29, 30, 31, 34] // A C D Eb E G
-const MINOR_PENTA = [0, 3, 5, 7, 10, 12, 15, 17, 19, 22, 24, 27, 29, 31, 34] // A C D E G
-const MAJOR = [0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19, 21, 23, 24, 26, 28, 29, 31, 33, 35] // A B C D E F G
-const PHRYGIAN_DOM = [0, 1, 4, 5, 7, 8, 10, 12, 13, 16, 17, 19, 20, 22, 24, 25, 28, 29, 31, 32, 34] // A Bb C# D E F G (1-♭2-3-4-5-♭6-♭7)
+const MINOR_BLUES = [0, 3, 5, 6, 7, 10, 12, 15, 17, 18, 19, 22, 24, 27, 29, 30, 31, 34] // C Eb F F# G Bb
+const MINOR_PENTA = [0, 3, 5, 7, 10, 12, 15, 17, 19, 22, 24, 27, 29, 31, 34] // C Eb F G Bb
+const MAJOR = [0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19, 21, 23, 24, 26, 28, 29, 31, 33, 35] // C D E F G A B
+const PHRYGIAN_DOM = [0, 1, 4, 5, 7, 8, 10, 12, 13, 16, 17, 19, 20, 22, 24, 25, 28, 29, 31, 32, 34] // C Db E F G Ab Bb (1-♭2-3-4-5-♭6-♭7)
 
 const SCALES = [
-  { id: 'blues', name: 'Blues', short: 'blues', notes: 'A · C · D · E♭ · E · G', degrees: MINOR_BLUES },
-  { id: 'pentatonic', name: 'Pentatonic', short: 'penta', notes: 'A · C · D · E · G', degrees: MINOR_PENTA },
-  { id: 'major', name: 'Major', short: 'major', notes: 'A · B · C · D · E · F · G', degrees: MAJOR },
-  { id: 'phrygian', name: 'Phrygian Dominant', short: 'phryg', notes: 'A · B♭ · C♯ · D · E · F · G', degrees: PHRYGIAN_DOM },
+  { id: 'blues', name: 'Blues', short: 'blues', notes: 'C · E♭ · F · F♯ · G · B♭', degrees: MINOR_BLUES },
+  { id: 'pentatonic', name: 'Pentatonic', short: 'penta', notes: 'C · E♭ · F · G · B♭', degrees: MINOR_PENTA },
+  { id: 'major', name: 'Major', short: 'major', notes: 'C · D · E · F · G · A · B', degrees: MAJOR },
+  { id: 'phrygian', name: 'Phrygian Dominant', short: 'phryg', notes: 'C · D♭ · E · F · G · A♭ · B♭', degrees: PHRYGIAN_DOM },
 ]
 const DEFAULT_SCALE_ID = 'blues'
 
