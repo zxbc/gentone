@@ -49,12 +49,16 @@ picker is the only way to mute. While muted the chip reads `♪ off`.
 - **Melodic wander** — each streaming note random-walks ±`WANDER` (2) scale
   degrees around the speed-mapped pitch, so steady generation wanders
   melodically instead of holding one note. Switching scales re-anchors the
-  walk and clears the recent-note history so notes from another scale can't
-  trip the monotony detector.
-- **Monotony breaker** — the last `JITTER_WINDOW` (8) notes are watched; if
-  every one sits within `JITTER_THRESHOLD` (1) degree of its neighbours, the
-  next `JITTER_COUNT` (4) notes get an extra ±`JITTER_AMOUNT` (3) degree random
-  offset so the melody can't stall on a single pitch.
+  walk and clears any active jitter so a perturbation can't leak across scales.
+- **Smooth jitter** — a constant-probability perturbation, independent of how
+  monotone the melody is. With chance `JITTER_PROB` (0.2) per eligible note, a
+  short "bump" starts: a pattern of 1–`JITTER_MAX_LEN` (4) notes whose peak
+  deviation is 1–`JITTER_MAX_PEAK` (4) degrees. The bump rises toward the peak
+  and falls after it (each step ±1, never overshooting the envelope), so the
+  melody is bent continuously across a few notes instead of a single note
+  jumping. The sign is random, so a jitter lifts or dips the line. A jitter
+  never starts while one is active, and once it ends a `JITTER_GAP` (8) note
+  quiet period passes before the next can start.
 - **Rhythm in groups of 8** — the scheduler is a `setTimeout` chain, not a
   fixed `setInterval`. Every `PATTERN_SIZE` (8) notes played use a fixed
   pattern of intervals, each drawn once around `NOTE_EVERY_MS` (150 ms) within
@@ -97,8 +101,9 @@ picker is the only way to mute. While muted the chip reads `♪ off`.
 | `STALE_MS` | 900 | token gap before silence (tool calls / waits) |
 | `EMA` | 0.3 | pitch smoothing (1 = none, 0 = frozen) |
 | `WANDER` | 2 | ±scale degrees of pitch variation around the mapped note |
-| `JITTER_WINDOW` / `JITTER_THRESHOLD` | 8 / 1 | monotony detector: recent notes watched, degree tolerance |
-| `JITTER_COUNT` / `JITTER_AMOUNT` | 4 / 3 | notes in a monotony burst, ±degrees of extra pitch jitter |
+| `JITTER_PROB` | 0.2 | per-note chance a smooth jitter starts (constant throughout, not monotony-based) |
+| `JITTER_MAX_LEN` / `JITTER_MAX_PEAK` | 4 / 4 | max notes in a jitter bump, and max peak deviation in scale degrees |
+| `JITTER_GAP` | 8 | quiet notes after a jitter ends before the next can start |
 | `VOLUME` | 0.07 | master volume for streaming notes (0–1) |
 | `THINKING_VOLUME` | 0.05 | volume for the thinking notes (~70% of `VOLUME`) |
 | `SHIMMER` | 0.007 | detune of the second oscillator (robot color) |

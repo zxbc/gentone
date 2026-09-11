@@ -22,9 +22,11 @@
 //     degree, so the speed variations paint a melody in the scale. Each
 //     streaming note additionally random-walks ±WANDER degrees around that
 //     mapped pitch so the tone wanders melodically rather than holding a note.
-//     A monotony breaker watches the last JITTER_WINDOW notes: if every one
-//     sits within JITTER_THRESHOLD degrees of its neighbours, the next
-//     JITTER_COUNT notes get a bigger random offset so the melody can't stall.
+//     A smooth jitter then bends the melody: with a constant chance (per note,
+//     independent of how "monotone" it is) a short perturbation starts — a bump
+//     of ≤4 notes whose peak deviation is 1–4 degrees, rising then falling so
+//     the change spreads smoothly across a few notes. Once one ends, a quiet
+//     gap of ≥8 notes passes before another can start.
 //   - The ♪ chip is the scale selector (Blues by default, plus Pentatonic,
 //     Major, Phrygian Dominant); picking any scale is always on, and an
 //     explicit "Off" row at the bottom of the picker is the only way to mute.
@@ -69,10 +71,10 @@ const MAX_CPS = 100              // chars/sec → highest degree (100+ tps hits 
 const STALE_MS = 900             // no delta for this long → thinking mode
 const EMA = 0.3                  // pitch smoothing, 1 = none, 0 = frozen
 const WANDER = 2                 // ±scale degrees of pitch variation around the mapped note
-const JITTER_WINDOW = 8          // how many recent notes the monotony detector keeps
-const JITTER_THRESHOLD = 1       // if every note in the window is within this many degrees of its neighbours…
-const JITTER_COUNT = 4           // …then spread the next few notes with extra jitter to break up the monotony
-const JITTER_AMOUNT = 3          // ±degrees of extra pitch jitter applied when breaking monotony
+const JITTER_PROB = 0.2          // probability per eligible note that a new jitter starts (constant throughout)
+const JITTER_MAX_LEN = 4         // a jitter pattern never modifies more than this many notes
+const JITTER_MAX_PEAK = 4        // the max peak deviation, in scale degrees, never exceeds this
+const JITTER_GAP = 8             // notes with no jitter after a pattern ends before the next can start
 const VOLUME = 0.07              // 0..1 master volume (streaming notes)
 const THINKING_VOLUME = 0.05     // thinking-note volume (~70% of VOLUME)
 const SHIMMER = 0.007            // detune of the second oscillator (robot shimmer)
@@ -85,8 +87,9 @@ let inThinking = false        // true while the latest tokens are thinking/reaso
 const deltas = []             // [{ t, chars }] speed window
 let emaCps = null             // smoothed chars/sec
 let wander = 0                // current ±degree offset from the mapped note
-const lastNotes = []          // recently played degrees — feeds the monotony detector
-let jitterNotesLeft = 0       // notes remaining in the next "break the monotony" burst
+let jitterPattern = null      // active smooth perturbation — array of integer degree deltas, or null
+let jitterPos = 0             // note index within the active jitterPattern
+let jitterGap = 0             // notes left in the quiet gap before the next jitter may start
 let timer = null              // scheduler handle (setTimeout chain)
 let pattern = null            // [ms, ...] intervals for the current note group
 let patternPos = 0            // slot within the current pattern
@@ -106,8 +109,9 @@ function setScale(id) {
   enabled = true            // every scale is "on" — only the Off row mutes
   if (enabled && !timer) resumeAudio()
   wander = 0                 // re-anchor the walk at the new scale's mapped pitch
-  lastNotes.length = 0       // don't let notes from another scale trip the detector
-  jitterNotesLeft = 0
+  jitterPattern = null       // don't carry a perturbation across a scale change
+  jitterPos = 0
+  jitterGap = 0
   emitState()
 }
 
@@ -189,6 +193,28 @@ function degreeForCps(cps) {
   return i
 }
 
+// ------------------------------ smooth jitter --------------------------------
+/** Roll one jitter "perturbation": a short (≤ JITTER_MAX_LEN note) bump of
+ *  integer scale-degree deltas whose maximum is a random peak of 1..JITTER_MAX_PEAK.
+ *  The bump rises toward the peak and falls after it (each step ±1), so the
+ *  melody is bent continuously over a few notes instead of one note jumping.
+ *  The sign is random — a jitter can lift the melody or dip it. */
+function rollJitterPattern() {
+  const len = 1 + Math.floor(Math.random() * JITTER_MAX_LEN)      // 1..4 notes
+  const peak = 1 + Math.floor(Math.random() * JITTER_MAX_PEAK)    // 1..4 degrees
+  const peakPos = Math.floor(Math.random() * len)                 // where the bump tops out
+  const pattern = new Array(len)
+  for (let i = 0; i < len; i += 1) {
+    const dist = Math.abs(i - peakPos)
+    const target = peak - dist                                    // ramp down by 1 per step
+    pattern[i] = i === 0 ? target : Math.max(1, pattern[i - 1] + (Math.random() < 0.5 ? -1 : 1))
+    if (pattern[i] > target) pattern[i] = target                  // never overshoot the envelope
+  }
+  const sign = Math.random() < 0.5 ? -1 : 1
+  jitterPattern = pattern.map(d => sign * d)
+  jitterPos = 0
+}
+
 // ------------------------------ scheduler -----------------------------------
 /** One rhythm pattern = PATTERN_SIZE intervals, each base ±JITTER. The pattern
  *  holds for a whole group of notes and a fresh one rolls only after 8 notes
@@ -226,24 +252,32 @@ function tick() {
   if (generating > 0 && !document.hidden && now - lastDeltaAt <= STALE_MS) {
     resumeAudio()
     wander = Math.max(-WANDER, Math.min(WANDER, wander + (Math.random() * 2 - 1)))
-    // Monotony breaker: if every recent note sits within JITTER_THRESHOLD
-    // degrees of its neighbours, the walk has stalled — kick the next
-    // JITTER_COUNT notes with a bigger random offset so the melody wakes up.
+
+    // Smooth jitter: a constant-probability perturbation that bends the melody
+    // across a few notes. It never starts while one is active, and once a
+    // pattern ends a JITTER_GAP quiet period passes before the next can start.
     let jitter = 0
-    if (jitterNotesLeft > 0) {
-      jitter = (Math.random() * 2 - 1) * JITTER_AMOUNT
-      jitterNotesLeft -= 1
-    } else if (lastNotes.length >= JITTER_WINDOW) {
-      let monotone = true
-      for (let i = 1; i < lastNotes.length; i += 1) {
-        if (Math.abs(lastNotes[i] - lastNotes[i - 1]) > JITTER_THRESHOLD) { monotone = false; break }
+    if (jitterPattern) {
+      jitter = jitterPattern[jitterPos]
+      jitterPos += 1
+      if (jitterPos >= jitterPattern.length) {
+        jitterPattern = null
+        jitterGap = JITTER_GAP
       }
-      if (monotone) jitterNotesLeft = JITTER_COUNT
+    } else if (jitterGap > 0) {
+      jitterGap -= 1
+    } else if (Math.random() < JITTER_PROB) {
+      rollJitterPattern()
+      jitter = jitterPattern[jitterPos]
+      jitterPos += 1
+      if (jitterPos >= jitterPattern.length) {
+        jitterPattern = null
+        jitterGap = JITTER_GAP
+      }
     }
+
     const degree = Math.max(0, Math.min(degrees.length - 1, degreeForCps(emaCps) + Math.round(wander + jitter)))
     playNote(degree, inThinking ? THINKING_VOLUME : VOLUME)
-    lastNotes.push(degree)
-    if (lastNotes.length > JITTER_WINDOW) lastNotes.shift()
     played = true
   }
 
@@ -284,8 +318,9 @@ function onGatewayEvent(event) {
     generating += 1
     emaCps = null
     wander = 0
-    lastNotes.length = 0
-    jitterNotesLeft = 0
+    jitterPattern = null
+    jitterPos = 0
+    jitterGap = 0
     inThinking = false
     lastDeltaAt = performance.now()
     ensureTimer()
