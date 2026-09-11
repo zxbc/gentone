@@ -1,4 +1,4 @@
-# genTone — Musical chirps while Hermes streams
+# genTone: Musical chirps while Hermes streams
 
 A [Hermes Desktop Plugin](https://hermes-agent.nousresearch.com/docs/developer-guide/desktop-plugin-sdk)
 (single ESM file, `@hermes/plugin-sdk`). While the agent streams text, it emits
