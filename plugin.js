@@ -482,7 +482,7 @@ function onGatewayEvent(event) {
 const CSS = `
 .hermes-gentone-bar{display:flex;align-items:center;height:100%;color:var(--ui-text-tertiary)}
 .hermes-gentone-bar .hermes-gentone-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.hermes-gentone-picker{width:216px;max-width:calc(100vw - 24px);padding:6px}
+.hermes-gentone-picker{width:272px;max-width:calc(100vw - 24px);padding:6px}
 .hermes-gentone-scale-row{display:flex;align-items:center;gap:8px;width:100%;height:26px;padding:2px 6px;border-radius:4px;text-align:left;font-size:12px;line-height:18px;color:var(--ui-text-primary);cursor:pointer}
 .hermes-gentone-scale-row:hover,.hermes-gentone-scale-row:focus-visible{background:var(--chrome-action-hover)}
 .hermes-gentone-scale-row[data-current=true]{background:var(--chrome-action-hover)}

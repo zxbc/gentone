@@ -1,4 +1,4 @@
-# genTone — scale-mapped chirps while Hermes streams
+# genTone — Musical chirps while Hermes streams
 
 A [Hermes Desktop Plugin](https://hermes-agent.nousresearch.com/docs/developer-guide/desktop-plugin-sdk)
 (single ESM file, `@hermes/plugin-sdk`). While the agent streams text, it emits
@@ -28,7 +28,9 @@ Diminished/Whole-Tone top out at B♭6 (≈1865 Hz) and Major at C7 (≈1976 Hz)
    (the folder name **must** match the plugin `id`: `gentone`; under a named
    profile it's `~/.hermes/profiles/<name>/desktop-plugins/gentone/`).
 2. The app loads it within a few seconds. If nothing appears, run `⌘K` →
-   **Reload desktop plugins**.
+   **Reload desktop plugins**. On the latest Hermes builds the plugin may not
+   register until you **fully relaunch Hermes Desktop** — quitting and
+   starting the app again is the reliable way to force it to load.
 3. If you hear nothing, click the `♪` chip once — that's the user gesture that
    unlocks the audio context (Electron autoplay policy).
 
