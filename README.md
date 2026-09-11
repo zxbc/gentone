@@ -9,16 +9,18 @@ scale. While the model is "thinking", the same speed-mapped notes continue at
 reduced volume (~70%), so the thinking phase sounds like the answer but
 quieter. Sound stops the moment the last stream ends.
 
-Four scales are selectable from the status-bar chip, all rooted at C and
+Six scales are selectable from the status-bar chip, all rooted at C and
 defaulting to **Blues**:
 
 - **Blues** (C minor blues) — C · E♭ · F · F♯ · G · B♭ — 18 degrees
 - **Pentatonic** (C minor pentatonic) — C · E♭ · F · G · B♭ — 15 degrees
 - **Major** (C major) — C · D · E · F · G · A · B — 21 degrees
 - **Phrygian Dominant** (1–♭2–3–4–5–♭6–♭7) — C · D♭ · E · F · G · A♭ · B♭ — 21 degrees
+- **Diminished** (half-whole diminished) — C · D♭ · E♭ · E · G♭ · G · A · B♭ — 24 degrees
+- **Whole Tone** (all whole steps) — C · D · E · F♯ · G♯ · A♯ — 18 degrees (six per octave)
 
-Every ladder spans three octaves from the C root; Blues/Pentatonic/Phrygian
-top out at B♭6 (≈1865 Hz) and Major at C7 (≈1976 Hz).
+Every ladder spans three octaves from the C root; Blues/Pentatonic/Phrygian/
+Diminished/Whole-Tone top out at B♭6 (≈1865 Hz) and Major at C7 (≈1976 Hz).
 
 ## Install
 

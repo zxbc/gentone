@@ -11,18 +11,21 @@
 //   - While any session is streaming, a scheduler emits short chirps on a fixed
 //     time-locked grid: every phrase is exactly RHYTHM_PERIOD_MS (4 s) long,
 //     split into RHYTHM_BARS bars (500 ms each). Each phrase is a fresh random
-//     rhythm — a random number of notes placed across the bars' eighth-note
+//     rhythm — a random number of notes placed across the bars' sixteenth-note
 //     slots, with the downbeat always anchored and bar starts weighted to feel
 //     grounded. The grid is locked to the wall clock, so the 4 s phrases stay
 //     steady with no drift even across silent gaps. Each note's pitch comes
 //     from the stream speed (see below), so the rhythm varies but the melody
 //     still follows generation.
 //   - Generation speed = all streamed chars (text AND thinking tokens) over a
-//     rolling WINDOW_MS window. That rate (EMA-smoothed, log-mapped) picks the
-//     pitch from the selected scale's 3-octave ladder — C minor blues by
-//     default, or minor pentatonic, major, or phrygian dominant, chosen from
-//     the ♪ chip's popover (see SCALES below). Faster stream → higher scale
-//     degree, so the speed variations paint a melody in the scale. Each
+//     rolling WINDOW_MS window. That rate (EMA-smoothed) picks the pitch from
+//     the selected scale's 3-octave ladder — C minor blues by default, or
+//     minor pentatonic, major, phrygian dominant, diminished, or whole tone,
+//     chosen from the ♪ chip's popover (see SCALES below) — via a dynamically compressed mapping: every
+//     REMAP_INTERVAL_MS the cps range observed over the past RANGE_WINDOW_MS
+//     is fitted across the whole ladder (with a min-span sensitivity floor
+//     and edge padding), so a steady tps band still spans three octaves
+//     instead of hovering on one note. Each
 //     streaming note additionally random-walks ±WANDER degrees around that
 //     mapped pitch so the tone wanders melodically rather than holding a note.
 //     A smooth jitter then bends the melody: with a constant chance (per note,
@@ -49,32 +52,40 @@ import { useEffect, useRef, useState } from 'react'
 const ROOT_FREQ = 261.63         // Hz of scale degree 0 (C4)
 
 // 3-octave scale ladders (semitone offsets from the root, ascending). Every
-// scale ends exactly two octaves above its first note, so the top degree maps
-// to the same ceiling note across scales.
+// ladder spans three octaves from the C root; Major tops out at C7 (35) and
+// the other five at B♭6 (34).
 const MINOR_BLUES = [0, 3, 5, 6, 7, 10, 12, 15, 17, 18, 19, 22, 24, 27, 29, 30, 31, 34] // C Eb F F# G Bb
 const MINOR_PENTA = [0, 3, 5, 7, 10, 12, 15, 17, 19, 22, 24, 27, 29, 31, 34] // C Eb F G Bb
 const MAJOR = [0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19, 21, 23, 24, 26, 28, 29, 31, 33, 35] // C D E F G A B
 const PHRYGIAN_DOM = [0, 1, 4, 5, 7, 8, 10, 12, 13, 16, 17, 19, 20, 22, 24, 25, 28, 29, 31, 32, 34] // C Db E F G Ab Bb (1-♭2-3-4-5-♭6-♭7)
+const DIMINISHED = [0, 1, 3, 4, 6, 7, 9, 10, 12, 13, 15, 16, 18, 19, 21, 22, 24, 25, 27, 28, 30, 31, 33, 34] // C Db Eb E Gb G A Bb (half-whole diminished)
+const WHOLE_TONE = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34] // C D E F# G# A# (all whole steps — only six degrees per octave)
 
 const SCALES = [
   { id: 'blues', name: 'Blues', short: 'blues', notes: 'C · E♭ · F · F♯ · G · B♭', degrees: MINOR_BLUES },
   { id: 'pentatonic', name: 'Pentatonic', short: 'penta', notes: 'C · E♭ · F · G · B♭', degrees: MINOR_PENTA },
   { id: 'major', name: 'Major', short: 'major', notes: 'C · D · E · F · G · A · B', degrees: MAJOR },
   { id: 'phrygian', name: 'Phrygian Dominant', short: 'phryg', notes: 'C · D♭ · E · F · G · A♭ · B♭', degrees: PHRYGIAN_DOM },
+  { id: 'diminished', name: 'Diminished', short: 'dim', notes: 'C · D♭ · E♭ · E · G♭ · G · A · B♭', degrees: DIMINISHED },
+  { id: 'whole-tone', name: 'Whole Tone', short: 'wt', notes: 'C · D · E · F♯ · G♯ · A♯', degrees: WHOLE_TONE },
 ]
 const DEFAULT_SCALE_ID = 'blues'
 
-const NOTE_LEN_MS = 70           // chirp length (< shortest possible note spacing: 250 ms)
+const NOTE_LEN_MS = 70           // chirp length (< shortest possible note spacing: 125 ms)
 const RHYTHM_PERIOD_MS = 4000    // fixed phrase length — every phrase is exactly this long
 const RHYTHM_BARS = 8            // bars per phrase (each bar = 500 ms)
-const RHYTHM_SLOTS = 16          // placement resolution (eighth notes: 2 slots per bar)
-const RHYTHM_MIN_NOTES = 5       // fewest notes a phrase may contain
-const RHYTHM_MAX_NOTES = 9       // most notes a phrase may contain
+const RHYTHM_SLOTS = 32          // placement resolution (sixteenth notes: 4 slots per bar)
+const RHYTHM_MIN_NOTES = 10      // fewest notes a phrase may contain
+const RHYTHM_MAX_NOTES = 18      // most notes a phrase may contain
 const RHYTHM_DOWNBEAT_WEIGHT = 3 // bar starts (downbeats) are 3x more likely to hold a note than offbeats
 const WINDOW_MS = 700            // speed rolling window
-const MIN_CPS = 6                // chars/sec → lowest degree (single-digit / low tps)
-const MAX_CPS = 100              // chars/sec → highest degree (100+ tps hits the top)
+const MIN_CPS = 6                // initial mapping floor (natural log units), until samples arrive
+const MAX_CPS = 100              // initial mapping ceiling, until samples arrive
 const STALE_MS = 900             // no delta for this long → thinking mode
+const RANGE_WINDOW_MS = 16000    // rolling cps history used to estimate the speed range
+const REMAP_INTERVAL_MS = 8000   // how often the dynamic pitch bounds are recomputed (~2 phrases)
+const MIN_SPAN_LOG2 = 0.5        // min span (log2 of cps) the mapping covers — sensitivity floor
+const RANGE_PAD = 0.10           // bounds padded outward by this fraction of the span
 const EMA = 0.3                  // pitch smoothing, 1 = none, 0 = frozen
 const WANDER = 2                 // ±scale degrees of pitch variation around the mapped note
 const JITTER_PROB = 0.2          // probability per eligible note that a new jitter starts (constant throughout)
@@ -92,6 +103,10 @@ let lastDeltaAt = 0           // performance.now() of last token (text or thinki
 let inThinking = false        // true while the latest tokens are thinking/reasoning
 const deltas = []             // [{ t, chars }] speed window
 let emaCps = null             // smoothed chars/sec
+const cpsSamples = []         // [{ t, cps }] rolling history feeding the dynamic range
+let mapLo = Math.log(MIN_CPS) // current dynamic mapping bounds (natural log of cps)
+let mapHi = Math.log(MAX_CPS)
+let lastRemapAt = 0           // last time the dynamic bounds were remapped
 let wander = 0                // current ±degree offset from the mapped note
 let jitterPattern = null      // active smooth perturbation — array of integer degree deltas, or null
 let jitterPos = 0             // note index within the active jitterPattern
@@ -191,10 +206,41 @@ function playNote(degree, vol = VOLUME) {
 }
 
 // ------------------------------ pitch mapping -------------------------------
+/** Recompute the dynamic mapping bounds: fit the cps range observed over the
+ *  past RANGE_WINDOW_MS across the whole ladder, with a minimum span so a very
+ *  steady stream can't become hypersensitive and a small outward pad so the
+ *  top and bottom degrees stay reachable. Called at most every
+ *  REMAP_INTERVAL_MS, so the compression drifts slowly instead of tracking
+ *  each tick and never causes a pitch jump. */
+function remapRange(now) {
+  if (now - lastRemapAt < REMAP_INTERVAL_MS) return
+  lastRemapAt = now
+  if (!cpsSamples.length) return // nothing observed yet — keep the initial bounds
+  let lo = Infinity
+  let hi = -Infinity
+  for (const s of cpsSamples) {
+    if (s.logCps < lo) lo = s.logCps
+    if (s.logCps > hi) hi = s.logCps
+  }
+  // min-span floor: a band narrower than 2^(MIN_SPAN_LOG2) in cps stays at the
+  // floor, centered on the observed range — sensitivity stays bounded
+  let span = hi - lo
+  if (span < MIN_SPAN_LOG2) {
+    const mid = (lo + hi) / 2
+    lo = mid - MIN_SPAN_LOG2 / 2
+    hi = mid + MIN_SPAN_LOG2 / 2
+    span = MIN_SPAN_LOG2
+  }
+  const pad = span * RANGE_PAD
+  mapLo = lo - pad
+  mapHi = hi + pad
+}
+
+/** Map the smoothed cps to a scale degree via the dynamic bounds. The ladder
+ *  is fitted onto [mapLo, mapHi] (natural log of cps, set by remapRange), so
+ *  the whole three-octave range tracks the recently observed speed range. */
 function degreeForCps(cps) {
-  const lo = Math.log(MIN_CPS)
-  const hi = Math.log(MAX_CPS)
-  const t = (Math.log(cps) - lo) / (hi - lo)
+  const t = (Math.log(cps) - mapLo) / (mapHi - mapLo)
   const degrees = getScale().degrees
   const i = Math.round(Math.min(1, Math.max(0, t)) * (degrees.length - 1))
   return i
@@ -223,10 +269,10 @@ function rollJitterPattern() {
 }
 
 // ------------------------------ rhythm --------------------------------------
-const SLOT_MS = RHYTHM_PERIOD_MS / RHYTHM_SLOTS // ms per placement slot (250 ms = an eighth note)
+const SLOT_MS = RHYTHM_PERIOD_MS / RHYTHM_SLOTS // ms per placement slot (125 ms = a sixteenth note)
 
 /** Roll one phrase of rhythm: RHYTHM_PERIOD_MS, fixed, subdivided into
- *  RHYTHM_SLOTS eighth-note slots. Returns a sorted list of the slot indices
+ *  RHYTHM_SLOTS sixteenth-note slots. Returns a sorted list of the slot indices
  *  that hold a note. A random count (RHYTHM_MIN_NOTES..RHYTHM_MAX_NOTES) of
  *  slots are chosen, with the downbeat (slot 0) always anchored and the rest
  *  drawn by weighted sampling that favours bar starts (downbeats) so the
@@ -294,6 +340,13 @@ function tick() {
     cps = (chars / WINDOW_MS) * 1000
   }
   emaCps = emaCps == null ? cps : EMA * cps + (1 - EMA) * emaCps
+
+  // Rolling cps history for the dynamic range, and a periodic remap of the
+  // pitch bounds onto the recently observed range.
+  cpsSamples.push({ t: now, logCps: Math.log(Math.max(cps, 1)) })
+  const sampleCutoff = now - RANGE_WINDOW_MS
+  while (cpsSamples.length && cpsSamples[0].t < sampleCutoff) cpsSamples.shift()
+  remapRange(now)
 
   // Fire every note whose slot has come due this tick. (If we were silent and
   // overshot one or more slots — e.g. a long token gap — skip them so the
@@ -372,6 +425,10 @@ function onGatewayEvent(event) {
     resumeAudio()
     generating += 1
     emaCps = null
+    cpsSamples.length = 0
+    mapLo = Math.log(MIN_CPS) // fresh stream → start from the initial bounds
+    mapHi = Math.log(MAX_CPS)
+    lastRemapAt = 0
     wander = 0
     jitterPattern = null
     jitterPos = 0
