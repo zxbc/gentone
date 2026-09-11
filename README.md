@@ -59,18 +59,23 @@ picker is the only way to mute. While muted the chip reads `♪ off`.
   jumping. The sign is random, so a jitter lifts or dips the line. A jitter
   never starts while one is active, and once it ends a `JITTER_GAP` (8) note
   quiet period passes before the next can start.
-- **Rhythm in groups of 8** — the scheduler is a `setTimeout` chain, not a
-  fixed `setInterval`. Every `PATTERN_SIZE` (8) notes played use a fixed
-  pattern of intervals, each drawn once around `NOTE_EVERY_MS` (150 ms) within
-  ±`JITTER` (default ±50%); a fresh random pattern rolls only after 8 notes
-  have actually played, so the rhythm stays steady within a group and varies
-  between groups. Silent ticks (token gaps) reschedule at the base interval
-  and don't advance the pattern.
-- **No stacking** — each chirp's envelope (70 ms) stays shorter than the
-  *shortest possible interval* (75 ms = 150 ms × 0.5), so notes physically
-  cannot overlap or queue even at the edge of the jitter range. When the last
-  stream ends the scheduler stops and the master gain fades in ~30 ms — no
-  trailing notes.
+- **Time-locked rhythm in phrases of 4 s** — the scheduler is a `setTimeout`
+  chain locked to the wall clock, not a fixed `setInterval`. Each phrase is
+  exactly `RHYTHM_PERIOD_MS` (4 s) long, split into `RHYTHM_BARS` (8) bars of
+  500 ms, each subdivided into eighth-note slots (`RHYTHM_SLOTS` = 16, i.e.
+  250 ms). Every phrase rolls a fresh random rhythm: a note count drawn from
+  `RHYTHM_MIN_NOTES`–`RHYTHM_MAX_NOTES` (5–9) is placed across the slots, with
+  the downbeat (slot 0) always anchored and bar starts weighted
+  `RHYTHM_DOWNBEAT_WEIGHT` (3×) more heavily than offbeats so the phrase feels
+  grounded even as the count and placement vary. The grid is anchored to
+  `performance.now()`, so the 4 s phrases stay steady with no drift and a new
+  phrase always begins exactly on the boundary — even across silent gaps.
+  Each note that fires still gets its pitch from the stream-speed mechanics
+  above, so the rhythm varies but the melody follows generation.
+- **No stacking** — each chirp's envelope (`NOTE_LEN_MS` = 70 ms) stays
+  shorter than the *shortest possible note spacing* (one slot = 250 ms), so
+  notes physically cannot overlap or queue. When the last stream ends the
+  scheduler stops and the master gain fades in ~30 ms — no trailing notes.
 - **Thinking at reduced volume** — thinking/reasoning tokens
   (`thinking.delta` / `reasoning.delta`) feed the same speed window and play
   the same speed-mapped, wandering notes at `THINKING_VOLUME` (~70% of
@@ -92,10 +97,11 @@ picker is the only way to mute. While muted the chip reads `♪ off`.
 | `MINOR_PENTA` | `[0,3,5,…,34]` | semitone offsets, 3-octave minor pentatonic (15 degrees) |
 | `MAJOR` | `[0,2,4,…,35]` | semitone offsets, 3-octave major (21 degrees) |
 | `PHRYGIAN_DOM` | `[0,1,4,…,34]` | semitone offsets, 3-octave phrygian dominant (21 degrees) |
-| `NOTE_EVERY_MS` | 150 | base cadence — rhythm intervals vary around this |
-| `NOTE_LEN_MS` | 70 | chirp length — keep ≤ 75 ms (shortest possible interval) |
-| `PATTERN_SIZE` | 8 | notes per rhythm pattern before a new one rolls |
-| `JITTER` | 0.5 | interval variation, ±50% of `NOTE_EVERY_MS` |
+| `NOTE_LEN_MS` | 70 | chirp length — keep ≤ 250 ms (one rhythm slot) |
+| `RHYTHM_PERIOD_MS` | 4000 | fixed phrase length — every phrase is exactly this long |
+| `RHYTHM_BARS` / `RHYTHM_SLOTS` | 8 / 16 | bars per phrase, and placement resolution (eighth notes) |
+| `RHYTHM_MIN_NOTES` / `RHYTHM_MAX_NOTES` | 5 / 9 | random note count range per phrase |
+| `RHYTHM_DOWNBEAT_WEIGHT` | 3 | bar starts weigh this much more than offbeats when placing notes |
 | `WINDOW_MS` | 700 | speed rolling window |
 | `MIN_CPS` / `MAX_CPS` | 6 / 100 | chars/sec spanned by the scale ladder |
 | `STALE_MS` | 900 | token gap before silence (tool calls / waits) |

@@ -8,12 +8,15 @@
 //
 // How it works:
 //   - Listens to gateway events: message.start / message.delta / message.complete
-//   - While any session is streaming, a scheduler emits one short chirp at a
-//     time — durations stay shorter than the shortest possible interval, so
-//     notes can never stack or queue. Rhythm is patterned: every PATTERN_SIZE
-//     notes use a fixed pattern of intervals around NOTE_EVERY_MS (each ±JITTER,
-//     default ±50%), and a fresh random pattern rolls only after 8 notes have
-//     actually played, so the rhythm feels steady in groups of 8.
+//   - While any session is streaming, a scheduler emits short chirps on a fixed
+//     time-locked grid: every phrase is exactly RHYTHM_PERIOD_MS (4 s) long,
+//     split into RHYTHM_BARS bars (500 ms each). Each phrase is a fresh random
+//     rhythm — a random number of notes placed across the bars' eighth-note
+//     slots, with the downbeat always anchored and bar starts weighted to feel
+//     grounded. The grid is locked to the wall clock, so the 4 s phrases stay
+//     steady with no drift even across silent gaps. Each note's pitch comes
+//     from the stream speed (see below), so the rhythm varies but the melody
+//     still follows generation.
 //   - Generation speed = all streamed chars (text AND thinking tokens) over a
 //     rolling WINDOW_MS window. That rate (EMA-smoothed, log-mapped) picks the
 //     pitch from the selected scale's 3-octave ladder — C minor blues by
@@ -61,10 +64,13 @@ const SCALES = [
 ]
 const DEFAULT_SCALE_ID = 'blues'
 
-const NOTE_EVERY_MS = 150        // base cadence — rhythm patterns vary around this
-const NOTE_LEN_MS = 70           // chirp length (< shortest possible interval: 75 ms)
-const PATTERN_SIZE = 8           // notes per rhythm pattern before a new one rolls
-const JITTER = 0.5               // interval variation, ±50% of NOTE_EVERY_MS
+const NOTE_LEN_MS = 70           // chirp length (< shortest possible note spacing: 250 ms)
+const RHYTHM_PERIOD_MS = 4000    // fixed phrase length — every phrase is exactly this long
+const RHYTHM_BARS = 8            // bars per phrase (each bar = 500 ms)
+const RHYTHM_SLOTS = 16          // placement resolution (eighth notes: 2 slots per bar)
+const RHYTHM_MIN_NOTES = 5       // fewest notes a phrase may contain
+const RHYTHM_MAX_NOTES = 9       // most notes a phrase may contain
+const RHYTHM_DOWNBEAT_WEIGHT = 3 // bar starts (downbeats) are 3x more likely to hold a note than offbeats
 const WINDOW_MS = 700            // speed rolling window
 const MIN_CPS = 6                // chars/sec → lowest degree (single-digit / low tps)
 const MAX_CPS = 100              // chars/sec → highest degree (100+ tps hits the top)
@@ -91,8 +97,9 @@ let jitterPattern = null      // active smooth perturbation — array of integer
 let jitterPos = 0             // note index within the active jitterPattern
 let jitterGap = 0             // notes left in the quiet gap before the next jitter may start
 let timer = null              // scheduler handle (setTimeout chain)
-let pattern = null            // [ms, ...] intervals for the current note group
-let patternPos = 0            // slot within the current pattern
+let rhythmSlots = null        // current phrase — sorted list of slot indices (0..RHYTHM_SLOTS-1) where notes fire
+let rhythmIndex = 0           // pointer into rhythmSlots — next note to fire this phrase
+let rhythmAnchor = 0          // performance.now() at which the current phrase began (wall-clock anchor)
 let audio = null              // AudioContext
 let master = null             // master GainNode
 let enabled = true            // user toggle
@@ -215,16 +222,62 @@ function rollJitterPattern() {
   jitterPos = 0
 }
 
-// ------------------------------ scheduler -----------------------------------
-/** One rhythm pattern = PATTERN_SIZE intervals, each base ±JITTER. The pattern
- *  holds for a whole group of notes and a fresh one rolls only after 8 notes
- *  have actually played, so the feel stays steady within a group. */
-function rollPattern() {
-  pattern = []
-  patternPos = 0
-  for (let i = 0; i < PATTERN_SIZE; i++) {
-    pattern.push(NOTE_EVERY_MS * (1 + (Math.random() * 2 - 1) * JITTER))
+// ------------------------------ rhythm --------------------------------------
+const SLOT_MS = RHYTHM_PERIOD_MS / RHYTHM_SLOTS // ms per placement slot (250 ms = an eighth note)
+
+/** Roll one phrase of rhythm: RHYTHM_PERIOD_MS, fixed, subdivided into
+ *  RHYTHM_SLOTS eighth-note slots. Returns a sorted list of the slot indices
+ *  that hold a note. A random count (RHYTHM_MIN_NOTES..RHYTHM_MAX_NOTES) of
+ *  slots are chosen, with the downbeat (slot 0) always anchored and the rest
+ *  drawn by weighted sampling that favours bar starts (downbeats) so the
+ *  phrase feels grounded even as the count and placement vary. */
+function rollRhythm() {
+  const count = RHYTHM_MIN_NOTES + Math.floor(Math.random() * (RHYTHM_MAX_NOTES - RHYTHM_MIN_NOTES + 1))
+  const chosen = new Set([0])
+  // weights per slot: downbeats (bar starts, every RHYTHM_SLOTS/RHYTHM_BARS slots) weigh more
+  const weights = new Array(RHYTHM_SLOTS)
+  const slotsPerBar = RHYTHM_SLOTS / RHYTHM_BARS
+  for (let s = 0; s < RHYTHM_SLOTS; s += 1) weights[s] = (s % slotsPerBar === 0) ? RHYTHM_DOWNBEAT_WEIGHT : 1
+  let remaining = count - 1
+  while (remaining > 0) {
+    let total = 0
+    for (let s = 0; s < RHYTHM_SLOTS; s += 1) if (!chosen.has(s)) total += weights[s]
+    let r = Math.random() * total
+    for (let s = 0; s < RHYTHM_SLOTS; s += 1) {
+      if (chosen.has(s)) continue
+      r -= weights[s]
+      if (r <= 0) { chosen.add(s); remaining -= 1; break }
+    }
+    if (remaining > 0 && chosen.size >= RHYTHM_SLOTS) break // safety: never more notes than slots
   }
+  return [...chosen].sort((a, b) => a - b)
+}
+
+/** Begin a fresh phrase anchored to the wall clock so phrases stay exactly
+ *  RHYTHM_PERIOD_MS long with no drift, even across silent gaps. */
+function startPhrase(now) {
+  rhythmSlots = rollRhythm()
+  rhythmIndex = 0
+  rhythmAnchor = now
+}
+
+// ------------------------------ scheduler -----------------------------------
+/** Schedule the next event of the current phrase on the wall-clock grid. A
+ *  tick fires either on a note's slot or, if none remain, exactly at the phrase
+ *  boundary — whichever comes first — then re-plans from the anchor. */
+function scheduleNext() {
+  if (disposed || !enabled) return
+  const now = performance.now()
+  let wait
+  if (rhythmIndex < rhythmSlots.length) {
+    const slotTime = rhythmAnchor + rhythmSlots[rhythmIndex] * SLOT_MS
+    wait = Math.max(0, slotTime - now)
+  } else {
+    // phrase is done — roll the next one exactly on the boundary (may already be
+    // slightly late if a gap stalled us; startPhrase re-anchors to keep it steady)
+    wait = Math.max(0, rhythmAnchor + RHYTHM_PERIOD_MS - now)
+  }
+  timer = setTimeout(tick, wait)
 }
 
 function tick() {
@@ -242,59 +295,61 @@ function tick() {
   }
   emaCps = emaCps == null ? cps : EMA * cps + (1 - EMA) * emaCps
 
-  // Chirp while a stream is active and tokens are flowing. Pitch tracks the
-  // speed-mapped degree (±WANDER) for both text and thinking. Thinking tokens
-  // feed the same speed window; we just play them at reduced volume so the
-  // "thinking" phase is audible but quieter than the answer. No tokens for
-  // STALE_MS (tool calls / waits) → silence.
-  let played = false
-  const degrees = getScale().degrees
-  if (generating > 0 && !document.hidden && now - lastDeltaAt <= STALE_MS) {
-    resumeAudio()
-    wander = Math.max(-WANDER, Math.min(WANDER, wander + (Math.random() * 2 - 1)))
+  // Fire every note whose slot has come due this tick. (If we were silent and
+  // overshot one or more slots — e.g. a long token gap — skip them so the
+  // phrase stays locked to the grid.)
+  while (rhythmIndex < rhythmSlots.length && now >= rhythmAnchor + rhythmSlots[rhythmIndex] * SLOT_MS) {
+    // Chirp while a stream is active and tokens are flowing. Pitch tracks the
+    // speed-mapped degree (±WANDER ±smooth-jitter) for both text and thinking.
+    // Thinking tokens feed the same speed window; we just play them at reduced
+    // volume so the "thinking" phase is audible but quieter. No tokens for
+    // STALE_MS (tool calls / waits) → silence.
+    if (generating > 0 && !document.hidden && now - lastDeltaAt <= STALE_MS) {
+      resumeAudio()
+      wander = Math.max(-WANDER, Math.min(WANDER, wander + (Math.random() * 2 - 1)))
 
-    // Smooth jitter: a constant-probability perturbation that bends the melody
-    // across a few notes. It never starts while one is active, and once a
-    // pattern ends a JITTER_GAP quiet period passes before the next can start.
-    let jitter = 0
-    if (jitterPattern) {
-      jitter = jitterPattern[jitterPos]
-      jitterPos += 1
-      if (jitterPos >= jitterPattern.length) {
-        jitterPattern = null
-        jitterGap = JITTER_GAP
+      // Smooth jitter: a constant-probability perturbation that bends the melody
+      // across a few notes. It never starts while one is active, and once a
+      // pattern ends a JITTER_GAP quiet period passes before the next can start.
+      let jitter = 0
+      if (jitterPattern) {
+        jitter = jitterPattern[jitterPos]
+        jitterPos += 1
+        if (jitterPos >= jitterPattern.length) {
+          jitterPattern = null
+          jitterGap = JITTER_GAP
+        }
+      } else if (jitterGap > 0) {
+        jitterGap -= 1
+      } else if (Math.random() < JITTER_PROB) {
+        rollJitterPattern()
+        jitter = jitterPattern[jitterPos]
+        jitterPos += 1
+        if (jitterPos >= jitterPattern.length) {
+          jitterPattern = null
+          jitterGap = JITTER_GAP
+        }
       }
-    } else if (jitterGap > 0) {
-      jitterGap -= 1
-    } else if (Math.random() < JITTER_PROB) {
-      rollJitterPattern()
-      jitter = jitterPattern[jitterPos]
-      jitterPos += 1
-      if (jitterPos >= jitterPattern.length) {
-        jitterPattern = null
-        jitterGap = JITTER_GAP
-      }
+
+      const degrees = getScale().degrees
+      const degree = Math.max(0, Math.min(degrees.length - 1, degreeForCps(emaCps) + Math.round(wander + jitter)))
+      playNote(degree, inThinking ? THINKING_VOLUME : VOLUME)
     }
-
-    const degree = Math.max(0, Math.min(degrees.length - 1, degreeForCps(emaCps) + Math.round(wander + jitter)))
-    playNote(degree, inThinking ? THINKING_VOLUME : VOLUME)
-    played = true
+    rhythmIndex += 1
   }
 
-  // Advance the rhythm only on notes actually played (the user asked for a new
-  // pattern every 8 notes played), then schedule the next tick from the
-  // pattern. Silent ticks (gaps) just reschedule at the base interval.
-  if (played) {
-    patternPos += 1
-    if (patternPos >= PATTERN_SIZE) rollPattern()
-  }
-  timer = setTimeout(tick, played ? pattern[patternPos] : NOTE_EVERY_MS)
+  // Roll the next phrase exactly at the grid boundary — independent of where the
+  // last note of this phrase landed — so every phrase stays RHYTHM_PERIOD_MS
+  // long with no drift. Re-anchors the clock (self-corrects any accumulated
+  // setTimeout jitter, and snaps back after a long silent gap).
+  if (now >= rhythmAnchor + RHYTHM_PERIOD_MS) startPhrase(now)
+  scheduleNext()
 }
 
 function ensureTimer() {
   if (timer) return
-  rollPattern()
-  timer = setTimeout(tick, NOTE_EVERY_MS)
+  startPhrase(performance.now())
+  scheduleNext()
 }
 
 function stopStreaming() {
