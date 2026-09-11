@@ -5,7 +5,7 @@ A [Hermes Desktop Plugin](https://hermes-agent.nousresearch.com/docs/developer-g
 short robotic chirps whose pitch follows the generation speed, quantized to a
 three-octave scale ladder starting at C4 (261.63 Hz). Faster generation →
 higher notes, slower → lower, so the tempo of the model paints a melody in the
-scale. The melody also goes into little improvised "wandering" every once in a while. When the model is thinking, the same speed-mapped notes continue at
+scale. The melody also goes into little improvised "wanderings" every once in a while. When the model is thinking, the same speed-mapped notes continue at
 reduced volume (~70%), so the thinking phase sounds like the answer but
 quieter. Sound stops the moment the last stream ends.
 
