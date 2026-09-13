@@ -38,8 +38,10 @@ Diminished/Whole-Tone top out at B♭6 (≈1865 Hz) and Major at C7 (≈1976 Hz)
 
 The status-bar chip is the scale selector. It shows `♫` while streaming,
 `♪` idle, and `♪ off` muted, followed by the current scale name. Picking any
-scale always enables the plugin; the explicit **Off** row at the bottom of the
-picker is the only way to mute. While muted the chip reads `♪ off`.
+scale always enables the plugin. The **Volume** slider at the bottom of the
+picker sets the loudness: its minimum (0) mutes — the chip then reads `♪ off`
+— and dragging above 0 re-enables at that volume. The slider rests at the
+original volume by default and tops out 20% louder than that.
 
 ## How it works
 
@@ -97,10 +99,18 @@ picker is the only way to mute. While muted the chip reads `♪ off`.
   `message.complete`).
 - **Thinking at reduced volume** — thinking/reasoning tokens
   (`thinking.delta` / `reasoning.delta`) feed the same speed window and play
-  the same speed-mapped, wandering notes at `THINKING_VOLUME` (~70% of
-  `VOLUME`). The latest token type decides the volume class, so the transition
-  the transition is instant. Gaps with no tokens at all (tool calls, waits)
-  switch to the pause "interlude" beat once `STALE_MS` (900 ms) pass.
+  the same speed-mapped, wandering notes at ~70% of whatever the volume slider
+  is set to (so thinking stays quieter at any volume). The latest token type
+  decides the volume class, so the transition is instant. Gaps with no tokens
+  at all (tool calls, waits) switch to the pause "interlude" beat once
+  `STALE_MS` (900 ms) pass.
+- **Volume slider** — the **Volume** slider at the bottom of the picker sets
+  the streaming volume (`userVolume`, 0–`VOLUME_MAX`). Its default is the
+  original `VOLUME` (0.07); `VOLUME_MAX` is `VOLUME × 1.2` (0.084), so the
+  ceiling is 20% louder than the default. The minimum (0) mutes and reads
+  `♪ off` in the chip — it replaces the old explicit Off row — and any value
+  above 0 re-enables and resumes the audio. Thinking notes follow the slider
+  via `THINKING_RATIO` (~70%).
 - **Any session** — notes play while *any* session streams, focused or not
   (the tab being hidden also silences notes).
 - **Hot-reload safe** — a global engine guard disposes the previous module's
@@ -134,8 +144,10 @@ picker is the only way to mute. While muted the chip reads `♪ off`.
 | `JITTER_PROB` | 0.2 | per-note chance a smooth jitter starts (constant throughout, not monotony-based) |
 | `JITTER_MAX_LEN` / `JITTER_MAX_PEAK` | 4 / 4 | max notes in a jitter bump, and max peak deviation in scale degrees |
 | `JITTER_GAP` | 8 | quiet notes after a jitter ends before the next can start |
-| `VOLUME` | 0.07 | master volume for streaming notes (0–1) |
-| `THINKING_VOLUME` | 0.05 | volume for the thinking notes (~70% of `VOLUME`) |
+| `VOLUME` | 0.07 | default streaming volume (0–1) — where the picker slider rests with no input |
+| `VOLUME_MAX` | 0.084 | slider ceiling = `VOLUME × 1.2` (20% louder than the default) |
+| `THINKING_VOLUME` | 0.05 | default thinking-note volume (~70% of `VOLUME`) |
+| `THINKING_RATIO` | 0.05/0.07 | thinking notes scale by this (~70%) of whatever the slider sets |
 | `SHIMMER` | 0.007 | detune of the second oscillator (robot color) |
 
 ## Notes

@@ -34,9 +34,9 @@
 //     the change spreads smoothly across a few notes. Once one ends, a quiet
 //     gap of ≥8 notes passes before another can start.
 //   - The ♪ chip is the scale selector (Blues by default, plus Pentatonic,
-//     Major, Phrygian Dominant); picking any scale is always on, and an
-//     explicit "Off" row at the bottom of the picker is the only way to mute.
-//     While muted the chip reads "♪ off".
+//     Major, Phrygian Dominant). A volume slider at the bottom of the picker
+//     sets the loudness — dragging it to 0 (its minimum) mutes, and the chip
+//     then reads "♪ off". Dragging above 0 re-enables at that volume.
 //   - Thinking/reasoning tokens (thinking.delta / reasoning.delta) play the
 //     same speed-mapped notes at reduced volume (THINKING_VOLUME ≈ 70% of
 //     VOLUME), so the thinking phase is audible but quieter than the answer.
@@ -98,8 +98,10 @@ const JITTER_PROB = 0.2          // probability per eligible note that a new jit
 const JITTER_MAX_LEN = 4         // a jitter pattern never modifies more than this many notes
 const JITTER_MAX_PEAK = 4        // the max peak deviation, in scale degrees, never exceeds this
 const JITTER_GAP = 8             // notes with no jitter after a pattern ends before the next can start
-const VOLUME = 0.07              // 0..1 master volume (streaming notes)
-const THINKING_VOLUME = 0.05     // thinking-note volume (~70% of VOLUME)
+const VOLUME = 0.07              // 0..1 master volume (streaming notes) — the slider's DEFAULT
+const VOLUME_MAX = 0.084         // slider ceiling = VOLUME * 1.2 (20% louder than the default)
+const THINKING_VOLUME = 0.05     // default thinking-note volume (~70% of VOLUME)
+const THINKING_RATIO = THINKING_VOLUME / VOLUME // thinking stays ~70% of whatever the slider sets
 const SHIMMER = 0.007            // detune of the second oscillator (robot shimmer)
 // ----------------------------------------------------------------------------
 
@@ -124,6 +126,7 @@ let rhythmAnchor = 0          // performance.now() at which the current phrase b
 let audio = null              // AudioContext
 let master = null             // master GainNode
 let enabled = true            // user toggle
+let userVolume = VOLUME       // user-set streaming volume (slider), 0 = fully off
 const stateSubs = new Set()   // UI subscribers
 let disposed = false
 
@@ -134,7 +137,7 @@ const getScale = () => SCALES.find(s => s.id === currentScaleId) || SCALES[0]
 function setScale(id) {
   if (id === currentScaleId && enabled) return
   currentScaleId = id
-  enabled = true            // every scale is "on" — only the Off row mutes
+  enabled = true            // every scale is "on" — only the volume slider mutes
   if (enabled && !timer) resumeAudio()
   wander = 0                 // re-anchor the walk at the new scale's mapped pitch
   jitterPattern = null       // don't carry a perturbation across a scale change
@@ -152,6 +155,28 @@ const emitState = () => {
     }
   }
 }
+
+// ------------------------------ volume control ------------------------------
+/** Set the streaming volume from the picker slider. 0 (the minimum) mutes:
+ *  the scheduler stops and the chip reads "♪ off" — the replacement for the
+ *  old Off row. Picking any value above 0 re-enables and resumes audio. */
+function setVolume(v) {
+  userVolume = Math.max(0, Math.min(VOLUME_MAX, v))
+  if (userVolume === 0) {
+    if (!enabled) return
+    enabled = false
+    stopStreaming()
+  } else {
+    enabled = true
+    if (!timer) resumeAudio()
+  }
+  emitState()
+}
+
+/** Current thinking-note volume — the slider's streaming volume scaled down
+ *  by THINKING_RATIO (~70%), so thinking stays quieter no matter where the
+ *  slider sits. */
+const thinkingVol = () => userVolume * THINKING_RATIO
 
 // ------------------------------ audio ---------------------------------------
 function ensureAudio() {
@@ -177,13 +202,13 @@ function noteFreq(degree) {
 
 /** Play one short chirp at the given scale degree. Envelope is attack-then-decay
  *  and shorter than the scheduler interval, so notes never overlap. */
-function playNote(degree, vol = VOLUME) {
+function playNote(degree, vol = userVolume) {
   playChirp(noteFreq(degree), vol)
 }
 
 /** Play one short chirp at a fixed frequency — the same synthesis as a note,
  *  minus the scale mapping. Used by the pause "interlude" beat. */
-function playBeat(vol = VOLUME) {
+function playBeat(vol = userVolume) {
   playChirp(BEAT_FREQ, vol)
 }
 
@@ -378,7 +403,7 @@ function tick() {
     // ends (generating === 0 silences everything, and stopStreaming fades it).
     if (generating > 0 && !document.hidden && now - lastDeltaAt > STALE_MS) {
       resumeAudio()
-      playBeat(inThinking ? THINKING_VOLUME : VOLUME)
+      playBeat(inThinking ? thinkingVol() : userVolume)
     } else if (generating > 0 && !document.hidden) {
       resumeAudio()
       wander = Math.max(-WANDER, Math.min(WANDER, wander + (Math.random() * 2 - 1)))
@@ -408,7 +433,7 @@ function tick() {
 
       const degrees = getScale().degrees
       const degree = Math.max(0, Math.min(degrees.length - 1, degreeForCps(emaCps) + Math.round(wander + jitter)))
-      playNote(degree, inThinking ? THINKING_VOLUME : VOLUME)
+      playNote(degree, inThinking ? thinkingVol() : userVolume)
     }
     rhythmIndex += 1
   }
@@ -493,6 +518,12 @@ const CSS = `
 .hermes-gentone-scale-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hermes-gentone-scale-notes{flex-shrink:0;font-size:10px;color:var(--ui-text-quaternary)}
 .hermes-gentone-divider{height:1px;margin:4px 6px;background:var(--ui-text-quaternary);opacity:.25}
+.hermes-gentone-vol-row{display:flex;align-items:center;gap:8px;width:100%;height:26px;padding:2px 6px;color:var(--ui-text-primary);font-size:12px;line-height:18px}
+.hermes-gentone-vol-icon{display:flex;align-items:center;justify-content:center;width:14px;flex-shrink:0;color:var(--ui-text-quaternary)}
+.hermes-gentone-vol-name{flex-shrink:0}
+.hermes-gentone-vol-slider{flex:1;min-width:0;cursor:pointer;accent-color:var(--ui-accent);height:4px}
+.hermes-gentone-vol-slider:focus-visible{outline:1px solid var(--ui-accent);outline-offset:2px}
+.hermes-gentone-vol-value{flex-shrink:0;width:34px;text-align:right;font-size:10px;color:var(--ui-text-quaternary);font-variant-numeric:tabular-nums}
 `
 
 function GenToneChip() {
@@ -501,6 +532,7 @@ function GenToneChip() {
     generating: generating > 0,
     scaleId: currentScaleId,
     scaleName: getScale().name,
+    volume: userVolume,
   })
   const [open, setOpen] = useState(false)
   const triggerRef = useRef(null)
@@ -512,19 +544,15 @@ function GenToneChip() {
       generating: generating > 0,
       scaleId: currentScaleId,
       scaleName: getScale().name,
+      volume: userVolume,
     })
     stateSubs.add(fn)
     return () => stateSubs.delete(fn)
   }, [])
 
   // The chip is the selector trigger — picking a scale is always "on", so the
-  // chip itself no longer toggles mute. The only way to silence is the Off
-  // row at the bottom of the picker.
-  const setOff = () => {
-    enabled = false
-    stopStreaming()
-    emitState()
-  }
+  // chip itself doesn't toggle mute. Silence comes from the volume slider at
+  // the bottom of the picker: drag it to 0 and it reads "♪ off".
 
   // Freeze the trigger width while browsing so a selection can't resize the
   // chip and move the open popover under the pointer (radio-plugin pattern).
@@ -563,17 +591,33 @@ function GenToneChip() {
             ]
           }, scale.id)),
           jsx('div', { className: 'hermes-gentone-divider', 'aria-hidden': true }),
-          jsxs(RowButton, {
-            className: 'hermes-gentone-scale-row',
-            'data-current': false,
-            'aria-pressed': false,
-            title: 'Silence genTone until a scale is picked again',
-            onClick: setOff,
+          jsxs('div', {
+            className: 'hermes-gentone-vol-row',
+            title: 'Set genTone volume — the minimum (0) turns it off, drag right to re-enable and get louder (max ≈ 20% above default)',
             children: [
-              jsx('span', { className: 'hermes-gentone-scale-icon', 'aria-hidden': true, children: jsx(icons.VolumeX, { size: 12 }) }),
-              jsx('span', { className: 'hermes-gentone-scale-name', children: 'Off' }),
+              jsx('span', {
+                className: 'hermes-gentone-vol-icon',
+                'aria-hidden': true,
+                children: jsx(s.volume > 0 ? icons.Volume2 : icons.VolumeX, { size: 12 })
+              }),
+              jsx('span', { className: 'hermes-gentone-vol-name', children: 'Volume' }),
+              jsx('input', {
+                className: 'hermes-gentone-vol-slider',
+                type: 'range',
+                min: 0,
+                max: VOLUME_MAX,
+                step: 0.001,
+                value: s.volume,
+                'aria-label': 'genTone volume',
+                onChange: event => setVolume(Number(event.target.value)),
+              }),
+              jsx('span', {
+                className: 'hermes-gentone-vol-value',
+                'aria-hidden': true,
+                children: s.volume > 0 ? Math.round((s.volume / VOLUME_MAX) * 100) + '%' : 'off',
+              }),
             ]
-          }, 'off'),
+          }),
         ] })
       })
     ] }),
