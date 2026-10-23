@@ -2,9 +2,10 @@
 
 A [Hermes Desktop Plugin](https://hermes-agent.nousresearch.com/docs/developer-guide/desktop-plugin-sdk)
 (single ESM file, `@hermes/plugin-sdk`). While the agent streams text, it emits
-short robotic chirps — a sine tone with a quiet octave harmonic and a slow
-vibrato (the "murmur"), plus the occasional tiny random detune — whose
-pitch follows the generation speed, quantized to a
+short robotic chirps — pick from five distinct robotic timbres (a clean
+sine hum, a mellow triangle, a narrow pulse, an FM metallic bell, or a
+ring-modulated "Dalek" warble) — whose pitch follows the generation speed,
+quantized to a
 three-octave scale ladder starting at C4 (261.63 Hz). Faster generation →
 higher notes, slower → lower, so the tempo of the model paints a melody in the
 scale. The melody also goes into little improvised "wanderings" every once in a while. When the model is thinking, the same speed-mapped notes continue at
@@ -40,10 +41,13 @@ Diminished/Whole-Tone top out at B♭6 (≈1865 Hz) and Major at C7 (≈1976 Hz)
 
 The status-bar chip is the scale selector. It shows `♫` while streaming,
 `♪` idle, and `♪ off` muted, followed by the current scale name. Picking any
-scale always enables the plugin. The **Volume** slider at the bottom of the
-picker sets the loudness: its minimum (0) mutes — the chip then reads `♪ off`
-— and dragging above 0 re-enables at that volume. The slider rests at the
-original volume by default and tops out 20% louder than that.
+scale always enables the plugin. The **Tone** row in the middle of the picker
+switches the chirp timbre between five robotic sounds (Hum, Wood, Blip, Metal,
+Dalek) — the selection applies immediately to the next note. The **Volume**
+slider at the bottom of the picker sets the loudness: its minimum (0) mutes —
+the chip then reads `♪ off` — and dragging above 0 re-enables at that volume.
+The slider rests at the original volume by default and tops out 20% louder
+than that.
 
 ## How it works
 
@@ -87,14 +91,22 @@ original volume by default and tops out 20% louder than that.
   phrase always begins exactly on the boundary — even across silent gaps.
   Each note that fires still gets its pitch from the stream-speed mechanics
   above, so the rhythm varies but the melody follows generation.
-- **Chirp synthesis — robotic murmur** — each chirp is a sine fundamental plus
-  a quiet octave harmonic (15% gain), with a slow vibrato (5–6 Hz, ~0.8% depth,
-  rate randomized per note) modulating both oscillators' pitch, shaped by a
-  15 ms attack / 70 ms decay envelope. The sine core is used because sawtooth
-  reads as buzzy/annoying; the vibrato (frequency modulation) instead of a
-  tremolo (amplitude warble) because a gentle pitch wobble reads as
-  alive/robotic while amplitude warble reads as grating. The quiet octave adds
-  a hint of body without the harshness of a bright waveform.
+- **Chirp synthesis — five selectable robotic tones** — the popover has a
+  **Tone** row (between the scales and the volume slider) with five buttons,
+  each a different synthesis technique, so you can A/B all five at once:
+  - **Hum** — sine fundamental + quiet octave (15%), slow vibrato (5–6 Hz,
+    ~0.8% depth). Neutral, clean, electronic.
+  - **Wood** — triangle wave (odd harmonics rolling off as 1/n²) with a faint
+    vibrato. Mellow, woody, hollow.
+  - **Blip** — a 20% duty-cycle pulse wave (built as a `PeriodicWave` from its
+    Fourier series). Thin, nasal, reedy computer tone.
+  - **Metal** — FM bell: a sine carrier modulated at a non-integer 1.4 ratio
+    (inharmonic, metallic spectrum) through a lowpass. Machine-like.
+  - **Dalek** — ring modulation: the carrier is multiplied by a ~55 Hz sine
+    (a gain node driven by that sine), giving the hollow, warbly sum/difference
+    frequencies of the classic BBC Radiophonic Workshop robot voice.
+  All five share the same 15 ms attack / 70 ms decay envelope and the random
+  detune, and the tool-use beat uses the currently selected tone too.
 - **Organic random detune** — with chance `DETUNE_PROB` (0.15) per note, the
   note's pitch is multiplied by a random factor drawn fresh from
   ±`DETUNE_MIN`…`DETUNE_MAX` (0.2–1%, ≈ 3.5–17 cents). Most notes play in

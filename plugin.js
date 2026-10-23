@@ -77,6 +77,25 @@ const SCALES = [
 ]
 const DEFAULT_SCALE_ID = 'blues'
 
+// ------------------------------ tone selection ------------------------------
+// Five distinct robotic timbres, each a different synthesis technique. The user
+// picks one from the popover's tone row; playChirp dispatches on currentToneId.
+const TONES = [
+  { id: 'hum', name: 'Hum', short: 'Hum', desc: 'Clean sine hum with a slow vibrato — neutral, electronic' },
+  { id: 'wood', name: 'Wood', short: 'Wood', desc: 'Mellow triangle — woody, hollow, soft' },
+  { id: 'blip', name: 'Blip', short: 'Blip', desc: 'Narrow pulse — thin, nasal, reedy computer tone' },
+  { id: 'metal', name: 'Metal', short: 'Metal', desc: 'FM bell — inharmonic, metallic, machine' },
+  { id: 'dalek', name: 'Dalek', short: 'Dalek', desc: 'Ring-modulated — hollow, warbly, classic robot' },
+]
+const DEFAULT_TONE_ID = 'hum'
+let currentToneId = DEFAULT_TONE_ID
+const getTone = () => TONES.find(t => t.id === currentToneId) || TONES[0]
+function setTone(id) {
+  if (id === currentToneId) return
+  currentToneId = id
+  emitState()
+}
+
 const NOTE_LEN_MS = 70           // chirp length (< shortest possible note spacing: 125 ms)
 const BEAT_FREQ = 261.63         // Hz of the pause "interlude" beat — C4, the root of every scale
 const RHYTHM_PERIOD_MS = 4000    // fixed phrase length — every phrase is exactly this long
@@ -220,13 +239,125 @@ function playBeat(vol = userVolume) {
   playChirp(BEAT_FREQ, vol)
 }
 
-/** Shared chirp synthesis: a sine fundamental plus a quiet octave harmonic,
- *  with a slow vibrato (frequency modulation) — the "murmur". Sine-based
- *  because sawtooth reads as buzzy/annoying; vibrato (not tremolo) because
- *  amplitude warble reads as annoying while a gentle pitch wobble reads as
- *  alive/robotic. Envelope is shorter than the scheduler interval so sounds
- *  never overlap. `detune` is an optional random pitch multiplier (1 = in
- *  tune). */
+/** Build the pulse-wave PeriodicWave (20% duty cycle) once per audio context.
+ *  A narrow pulse has all harmonics present (even and odd) with a pinched,
+ *  nasal, reedy colour — the classic thin computer/robot blip. The Fourier
+ *  coefficients for a +1/-1 pulse of duty d are a_n = 2·sin(2πnd)/(πn) and
+ *  b_n = 2(1−cos(2πnd))/(πn); Web Audio normalises the peak to 1. */
+let pulseWave = null
+function getPulseWave(ac) {
+  if (pulseWave) return pulseWave
+  const N = 32
+  const real = new Float32Array(N)
+  const imag = new Float32Array(N)
+  const d = 0.2
+  for (let n = 1; n < N; n += 1) {
+    real[n] = (2 * Math.sin(2 * Math.PI * d * n)) / (Math.PI * n)
+    imag[n] = (2 * (1 - Math.cos(2 * Math.PI * d * n))) / (Math.PI * n)
+  }
+  pulseWave = ac.createPeriodicWave(real, imag)
+  return pulseWave
+}
+
+/** Build the oscillators (+ any modulators) for the currently selected tone,
+ *  wiring them into `dest` (the note's envelope gain). Returns the list of
+ *  source nodes the caller must start/stop. Each voice is a different
+ *  synthesis technique so the five popover tones are genuinely distinct. */
+function buildVoice(ac, f, dest) {
+  const nodes = []
+  if (currentToneId === 'wood') {
+    // Mellow triangle — odd harmonics rolling off as 1/n², woody and hollow
+    const osc = ac.createOscillator()
+    osc.type = 'triangle'
+    osc.frequency.value = f
+    const lfo = ac.createOscillator()
+    lfo.type = 'sine'
+    lfo.frequency.value = 4.5 + Math.random()
+    const lg = ac.createGain()
+    lg.gain.value = f * 0.005
+    lfo.connect(lg)
+    lg.connect(osc.frequency)
+    osc.connect(dest)
+    nodes.push(osc, lfo)
+  } else if (currentToneId === 'blip') {
+    // Narrow pulse — thin, nasal, reedy computer tone
+    const osc = ac.createOscillator()
+    osc.setPeriodicWave(getPulseWave(ac))
+    osc.frequency.value = f
+    const g = ac.createGain()
+    g.gain.value = 0.9
+    osc.connect(g)
+    g.connect(dest)
+    nodes.push(osc)
+  } else if (currentToneId === 'metal') {
+    // FM bell — a sine carrier modulated at a non-integer 1.4 ratio produces
+    // an inharmonic, metallic spectrum (the DX7 "bell" trick); a lowpass tames it
+    const carrier = ac.createOscillator()
+    carrier.type = 'sine'
+    carrier.frequency.value = f
+    const mod = ac.createOscillator()
+    mod.type = 'sine'
+    mod.frequency.value = f * 1.4
+    const mg = ac.createGain()
+    mg.gain.value = f * 2.2
+    mod.connect(mg)
+    mg.connect(carrier.frequency)
+    const lp = ac.createBiquadFilter()
+    lp.type = 'lowpass'
+    lp.frequency.value = Math.min(f * 6, 8000)
+    lp.Q.value = 0.7
+    carrier.connect(lp)
+    lp.connect(dest)
+    nodes.push(carrier, mod)
+  } else if (currentToneId === 'dalek') {
+    // Ring mod — the carrier is multiplied by a ~55 Hz sine (a gain node whose
+    // gain is driven by that sine, swinging −1..+1), yielding the hollow,
+    // warbly sum/difference frequencies of the classic BBC robot voice
+    const carrier = ac.createOscillator()
+    carrier.type = 'sine'
+    carrier.frequency.value = f
+    const ring = ac.createOscillator()
+    ring.type = 'sine'
+    ring.frequency.value = 55 + Math.random() * 10
+    const rg = ac.createGain()
+    rg.gain.value = 0
+    ring.connect(rg.gain)
+    const make = ac.createGain()
+    make.gain.value = 1.4
+    carrier.connect(rg)
+    rg.connect(make)
+    make.connect(dest)
+    nodes.push(carrier, ring)
+  } else {
+    // 'hum' (default) — sine fundamental + quiet octave, slow vibrato (murmur)
+    const osc1 = ac.createOscillator()
+    osc1.type = 'sine'
+    osc1.frequency.value = f
+    const osc2 = ac.createOscillator()
+    osc2.type = 'sine'
+    osc2.frequency.value = f * 2
+    const d2 = ac.createGain()
+    d2.gain.value = OCTAVE_GAIN
+    const lfo = ac.createOscillator()
+    lfo.type = 'sine'
+    lfo.frequency.value = VIB_FREQ + Math.random() * VIB_SPREAD
+    const lg = ac.createGain()
+    lg.gain.value = f * VIB_DEPTH
+    lfo.connect(lg)
+    lg.connect(osc1.frequency)
+    lg.connect(osc2.frequency)
+    osc1.connect(dest)
+    osc2.connect(d2)
+    d2.connect(dest)
+    nodes.push(osc1, osc2, lfo)
+  }
+  return nodes
+}
+
+/** Shared chirp synthesis: build the selected tone's voice, shape it with a
+ *  15 ms attack / 70 ms decay envelope (shorter than the scheduler interval so
+ *  sounds never overlap), and route it to the master. `detune` is an optional
+ *  random pitch multiplier (1 = in tune). */
 function playChirp(f, vol, detune = 1) {
   const ac = ensureAudio()
   if (!ac || !master) return
@@ -235,44 +366,18 @@ function playChirp(f, vol, detune = 1) {
 
   master.gain.setValueAtTime(vol, t) // restore bus at this note's volume (faded on stop)
 
-  // Sine fundamental — the neutral, pleasant core
-  const osc1 = ac.createOscillator()
-  osc1.type = 'sine'
-  osc1.frequency.value = freq
-  // A quiet octave harmonic adds a hint of body without the buzz of a sawtooth
-  const osc2 = ac.createOscillator()
-  osc2.type = 'sine'
-  osc2.frequency.value = freq * 2
-  const d2 = ac.createGain()
-  d2.gain.value = OCTAVE_GAIN
-
-  // Slow vibrato (frequency modulation) — the murmur (rate randomized per note)
-  const lfo = ac.createOscillator()
-  lfo.type = 'sine'
-  lfo.frequency.value = VIB_FREQ + Math.random() * VIB_SPREAD
-  const lfoGain = ac.createGain()
-  lfoGain.gain.value = freq * VIB_DEPTH
-  lfo.connect(lfoGain)
-  lfoGain.connect(osc1.frequency)
-  lfoGain.connect(osc2.frequency)
-
   const env = ac.createGain()
   const dur = NOTE_LEN_MS / 1000
   env.gain.setValueAtTime(0.0001, t)
   env.gain.exponentialRampToValueAtTime(1, t + 0.015)
   env.gain.exponentialRampToValueAtTime(0.0001, t + dur)
-
-  osc1.connect(env)
-  osc2.connect(d2)
-  d2.connect(env)
   env.connect(master)
 
-  osc1.start(t)
-  osc2.start(t)
-  lfo.start(t)
-  osc1.stop(t + dur + 0.02)
-  osc2.stop(t + dur + 0.02)
-  lfo.stop(t + dur + 0.02)
+  const nodes = buildVoice(ac, freq, env)
+  for (const n of nodes) {
+    n.start(t)
+    n.stop(t + dur + 0.02)
+  }
 }
 
 // ------------------------------ pitch mapping -------------------------------
@@ -551,6 +656,12 @@ const CSS = `
 .hermes-gentone-scale-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hermes-gentone-scale-notes{flex-shrink:0;font-size:10px;color:var(--ui-text-quaternary)}
 .hermes-gentone-divider{height:1px;margin:4px 6px;background:var(--ui-text-quaternary);opacity:.25}
+.hermes-gentone-tone-label{padding:2px 6px 0;font-size:10px;color:var(--ui-text-quaternary);text-transform:uppercase;letter-spacing:.04em}
+.hermes-gentone-tone-row{display:flex;gap:4px;width:100%;padding:2px 6px}
+.hermes-gentone-tone-btn{flex:1;min-width:0;height:26px;padding:0 4px;border:none;border-radius:4px;background:transparent;color:var(--ui-text-secondary);font-size:11px;line-height:22px;cursor:pointer;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hermes-gentone-tone-btn:hover,.hermes-gentone-tone-btn:focus-visible{background:var(--chrome-action-hover)}
+.hermes-gentone-tone-btn[data-current=true]{background:var(--chrome-action-hover);color:var(--ui-accent)}
+.hermes-gentone-tone-btn:focus-visible{outline:1px solid var(--ui-accent);outline-offset:-1px}
 .hermes-gentone-vol-row{display:flex;align-items:center;gap:8px;width:100%;height:26px;padding:2px 6px;color:var(--ui-text-primary);font-size:12px;line-height:18px}
 .hermes-gentone-vol-icon{display:flex;align-items:center;justify-content:center;width:14px;flex-shrink:0;color:var(--ui-text-quaternary)}
 .hermes-gentone-vol-name{flex-shrink:0}
@@ -565,6 +676,7 @@ function GenToneChip() {
     generating: generating > 0,
     scaleId: currentScaleId,
     scaleName: getScale().name,
+    toneId: currentToneId,
     volume: userVolume,
   })
   const [open, setOpen] = useState(false)
@@ -577,6 +689,7 @@ function GenToneChip() {
       generating: generating > 0,
       scaleId: currentScaleId,
       scaleName: getScale().name,
+      toneId: currentToneId,
       volume: userVolume,
     })
     stateSubs.add(fn)
@@ -623,6 +736,22 @@ function GenToneChip() {
               jsx('span', { className: 'hermes-gentone-scale-notes', children: scale.notes }),
             ]
           }, scale.id)),
+          jsx('div', { className: 'hermes-gentone-divider', 'aria-hidden': true }),
+          jsx('div', { className: 'hermes-gentone-tone-label', 'aria-hidden': true, children: 'Tone' }),
+          jsxs('div', {
+            className: 'hermes-gentone-tone-row',
+            role: 'group',
+            'aria-label': 'genTone tone',
+            children: TONES.map(tone => jsx('button', {
+              type: 'button',
+              className: 'hermes-gentone-tone-btn',
+              'data-current': tone.id === s.toneId,
+              'aria-pressed': tone.id === s.toneId,
+              title: tone.desc,
+              onClick: () => setTone(tone.id),
+              children: tone.short,
+            }, tone.id))
+          }),
           jsx('div', { className: 'hermes-gentone-divider', 'aria-hidden': true }),
           jsxs('div', {
             className: 'hermes-gentone-vol-row',
