@@ -2,7 +2,9 @@
 
 A [Hermes Desktop Plugin](https://hermes-agent.nousresearch.com/docs/developer-guide/desktop-plugin-sdk)
 (single ESM file, `@hermes/plugin-sdk`). While the agent streams text, it emits
-short robotic chirps whose pitch follows the generation speed, quantized to a
+short robotic chirps — a lowpass-filtered sawtooth murmur with a subtle tremolo,
+a very slight randomized echo, and the occasional tiny random detune — whose
+pitch follows the generation speed, quantized to a
 three-octave scale ladder starting at C4 (261.63 Hz). Faster generation →
 higher notes, slower → lower, so the tempo of the model paints a melody in the
 scale. The melody also goes into little improvised "wanderings" every once in a while. When the model is thinking, the same speed-mapped notes continue at
@@ -85,15 +87,29 @@ original volume by default and tops out 20% louder than that.
   phrase always begins exactly on the boundary — even across silent gaps.
   Each note that fires still gets its pitch from the stream-speed mechanics
   above, so the rhythm varies but the melody follows generation.
+- **Chirp synthesis — robotic murmur** — each chirp is two slightly detuned
+  sawtooth oscillators through a lowpass filter (cutoff ≈ 4× the fundamental,
+  capped at 6 kHz) and a subtle 5–8 Hz tremolo (±15% depth, frequency
+  randomized per note), shaped by a 15 ms attack / 70 ms decay envelope. The
+  filtered sawtooth plus slow tremolo reads as a pleasant robotic murmur
+  instead of the old bare-sine bird chirp. Every note also gets a very slight
+  echo (90 ms delay, 25% feedback, 8% mix) whose delay time and feedback are
+  randomized per note so no two echoes are identical.
+- **Organic random detune** — with chance `DETUNE_PROB` (0.15) per note, the
+  note's pitch is multiplied by a random factor drawn fresh from
+  ±`DETUNE_MIN`…`DETUNE_MAX` (0.2–1%, ≈ 3.5–17 cents). Most notes play in
+  tune and the detuned ones never repeat the same amount, so the intonation
+  drifts slightly like a real robot's.
 - **No stacking** — each chirp's envelope (`NOTE_LEN_MS` = 70 ms) stays
   shorter than the *shortest possible note spacing* (one slot = 125 ms), so
   notes physically cannot overlap or queue. When the last stream ends the
   scheduler stops and the master gain fades in ~30 ms — no trailing notes.
 - **Pause "interlude" beat** — while a stream is active but no tokens flow
   for `STALE_MS` (tool calls, waits), the same wall-clock-locked rhythm keeps
-  playing as a static-frequency hat-like beat at `BEAT_FREQ` (1200 Hz) instead
-  of silence — an interlude at the same tempo and placement complexity as the
-  notes, using the same chirp synthesis with the note choice removed. The
+  playing as a steady low C3 beat at `BEAT_FREQ` (130.81 Hz) instead of
+  silence — an interlude at the same tempo and placement complexity as the
+  notes, using the same chirp synthesis with the note choice removed. The low
+  C is the root of every scale, so the interlude grounds the melody. The
   instant tokens resume the speed-mapped notes take over again; when the
   stream fully ends the beat stops with everything else (nothing plays after
   `message.complete`).
@@ -127,7 +143,7 @@ original volume by default and tops out 20% louder than that.
 | `MAJOR` | `[0,2,4,…,35]` | semitone offsets, 3-octave major (21 degrees) |
 | `PHRYGIAN_DOM` | `[0,1,4,…,34]` | semitone offsets, 3-octave phrygian dominant (21 degrees) |
 | `NOTE_LEN_MS` | 70 | chirp length — keep ≤ 125 ms (one rhythm slot) |
-| `BEAT_FREQ` | 1200 | Hz of the static-frequency pause "interlude" beat (hat-like) |
+| `BEAT_FREQ` | 130.81 | Hz of the pause "interlude" beat — a low C3, the root of every scale |
 | `RHYTHM_PERIOD_MS` | 4000 | fixed phrase length — every phrase is exactly this long |
 | `RHYTHM_BARS` / `RHYTHM_SLOTS` | 8 / 32 | bars per phrase, and placement resolution (sixteenth notes) |
 | `RHYTHM_MIN_NOTES` / `RHYTHM_MAX_NOTES` | 10 / 18 | random note count range per phrase |
@@ -148,7 +164,14 @@ original volume by default and tops out 20% louder than that.
 | `VOLUME_MAX` | 0.084 | slider ceiling = `VOLUME × 1.2` (20% louder than the default) |
 | `THINKING_VOLUME` | 0.05 | default thinking-note volume (~70% of `VOLUME`) |
 | `THINKING_RATIO` | 0.05/0.07 | thinking notes scale by this (~70%) of whatever the slider sets |
-| `SHIMMER` | 0.007 | detune of the second oscillator (robot color) |
+| `SHIMMER` | 0.007 | detune of the second oscillator (robot chorusing) |
+| `TREM_FREQ` / `TREM_SPREAD` | 5 / 3 | murmur tremolo frequency, randomized per note within 5–8 Hz |
+| `TREM_DEPTH` | 0.15 | tremolo depth (±15% amplitude) |
+| `DETUNE_PROB` | 0.15 | per-note chance a random detune is applied (sparing) |
+| `DETUNE_MIN` / `DETUNE_MAX` | 0.002 / 0.01 | random detune range (0.2–1% ≈ 3.5–17 cents), drawn fresh each time |
+| `ECHO_DELAY` / `ECHO_JITTER` | 0.09 / 0.02 | echo delay (90 ms) ± per-note random variation (±20 ms) |
+| `ECHO_FEEDBACK` / `ECHO_FB_JITTER` | 0.25 / 0.3 | echo feedback ± per-note random variation (±30%) |
+| `ECHO_WET` | 0.08 | echo mix level — very very slight |
 
 ## Notes
 

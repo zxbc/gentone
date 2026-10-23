@@ -42,9 +42,10 @@
 //     VOLUME), so the thinking phase is audible but quieter than the answer.
 //   - While a stream is active but tokens have stopped flowing (tool calls,
 //     waits — no delta for STALE_MS), the same rhythm keeps playing as a
-//     static-frequency hat-like beat (BEAT_FREQ) instead of silence — an
-//     interlude. The instant tokens resume it's back to the speed-mapped
-//     notes; when the stream fully ends it stops with everything else.
+//     steady low C3 beat (BEAT_FREQ — the root of every scale) instead of
+//     silence — an interlude. The instant tokens resume it's back to the
+//     speed-mapped notes; when the stream fully ends it stops with everything
+//     else.
 //   - When the last stream ends, the scheduler stops and the master volume
 //     fades out in ~30ms — no trailing notes, no delay.
 // ============================================================================
@@ -77,7 +78,7 @@ const SCALES = [
 const DEFAULT_SCALE_ID = 'blues'
 
 const NOTE_LEN_MS = 70           // chirp length (< shortest possible note spacing: 125 ms)
-const BEAT_FREQ = 1200           // Hz of the static-frequency "interlude" beat — hat-like, kept mid-range so it isn't harsh
+const BEAT_FREQ = 130.81         // Hz of the pause "interlude" beat — a low C3, the root of every scale
 const RHYTHM_PERIOD_MS = 4000    // fixed phrase length — every phrase is exactly this long
 const RHYTHM_BARS = 8            // bars per phrase (each bar = 500 ms)
 const RHYTHM_SLOTS = 32          // placement resolution (sixteenth notes: 4 slots per bar)
@@ -102,7 +103,18 @@ const VOLUME = 0.07              // 0..1 master volume (streaming notes) — the
 const VOLUME_MAX = 0.084         // slider ceiling = VOLUME * 1.2 (20% louder than the default)
 const THINKING_VOLUME = 0.05     // default thinking-note volume (~70% of VOLUME)
 const THINKING_RATIO = THINKING_VOLUME / VOLUME // thinking stays ~70% of whatever the slider sets
-const SHIMMER = 0.007            // detune of the second oscillator (robot shimmer)
+const SHIMMER = 0.007            // detune of the second oscillator (robot chorusing)
+const TREM_FREQ = 5              // base frequency of the murmur tremolo (Hz)
+const TREM_SPREAD = 3            // random spread of the tremolo frequency (5–8 Hz)
+const TREM_DEPTH = 0.15          // tremolo depth (±15% amplitude)
+const DETUNE_PROB = 0.15         // chance per note that a random detune is applied (sparing)
+const DETUNE_MIN = 0.002         // smallest random detune (0.2% ≈ 3.5 cents)
+const DETUNE_MAX = 0.01          // largest random detune (1% ≈ 17 cents)
+const ECHO_DELAY = 0.09          // base echo delay (90 ms)
+const ECHO_JITTER = 0.02         // per-note random variation of the echo delay (±20 ms)
+const ECHO_FEEDBACK = 0.25       // echo feedback (repeats die out fast)
+const ECHO_FB_JITTER = 0.3       // per-note random variation of the feedback (±30%)
+const ECHO_WET = 0.08            // echo mix level — very very slight
 // ----------------------------------------------------------------------------
 
 // ------------------------------ engine state --------------------------------
@@ -125,6 +137,7 @@ let rhythmIndex = 0           // pointer into rhythmSlots — next note to fire 
 let rhythmAnchor = 0          // performance.now() at which the current phrase began (wall-clock anchor)
 let audio = null              // AudioContext
 let master = null             // master GainNode
+let echo = null               // { delay, feedback, wet } — the very slight echo path
 let enabled = true            // user toggle
 let userVolume = VOLUME       // user-set streaming volume (slider), 0 = fully off
 const stateSubs = new Set()   // UI subscribers
@@ -187,6 +200,21 @@ function ensureAudio() {
   master = audio.createGain()
   master.gain.value = 0
   master.connect(audio.destination)
+  // Very slight echo: master → delay → (feedback loop) → wet → destination.
+  // The wet gain is faded to 0 on stop so no echo tail outlives the last note.
+  echo = {
+    delay: audio.createDelay(1),
+    feedback: audio.createGain(),
+    wet: audio.createGain(),
+  }
+  echo.delay.delayTime.value = ECHO_DELAY
+  echo.feedback.gain.value = ECHO_FEEDBACK
+  echo.wet.gain.value = ECHO_WET
+  master.connect(echo.delay)
+  echo.delay.connect(echo.feedback)
+  echo.feedback.connect(echo.delay)
+  echo.delay.connect(echo.wet)
+  echo.wet.connect(audio.destination)
   return audio
 }
 
@@ -201,51 +229,86 @@ function noteFreq(degree) {
 }
 
 /** Play one short chirp at the given scale degree. Envelope is attack-then-decay
- *  and shorter than the scheduler interval, so notes never overlap. */
-function playNote(degree, vol = userVolume) {
-  playChirp(noteFreq(degree), vol)
+ *  and shorter than the scheduler interval, so notes never overlap. `detune` is
+ *  an optional pitch multiplier (1 = in tune) for the organic random detune. */
+function playNote(degree, vol = userVolume, detune = 1) {
+  playChirp(noteFreq(degree), vol, detune)
 }
 
 /** Play one short chirp at a fixed frequency — the same synthesis as a note,
- *  minus the scale mapping. Used by the pause "interlude" beat. */
+ *  minus the scale mapping. Used by the pause "interlude" beat (a steady low C). */
 function playBeat(vol = userVolume) {
   playChirp(BEAT_FREQ, vol)
 }
 
-/** Shared chirp synthesis: two detuned sine oscillators through a short
- *  attack-then-decay envelope, shorter than the scheduler interval so sounds
- *  never overlap. */
-function playChirp(f, vol) {
+/** Shared chirp synthesis: two slightly detuned sawtooth oscillators through
+ *  a lowpass filter (rounded, pleasant robotic murmur instead of a bird-like
+ *  sine chirp), a subtle low-frequency tremolo (the "murmur"), and a short
+ *  attack-then-decay envelope shorter than the scheduler interval so sounds
+ *  never overlap. `detune` is an optional random pitch multiplier (1 = in
+ *  tune). The echo's delay and feedback are varied slightly per note. */
+function playChirp(f, vol, detune = 1) {
   const ac = ensureAudio()
   if (!ac || !master) return
   const t = ac.currentTime
+  const freq = f * detune
 
   master.gain.setValueAtTime(vol, t) // restore bus at this note's volume (faded on stop)
 
+  // Lowpass filter rounds the sawtooth's harshness into a soft robotic hum
+  const filter = ac.createBiquadFilter()
+  filter.type = 'lowpass'
+  filter.frequency.value = Math.min(freq * 4, 6000)
+  filter.Q.value = 0.7
+
   const osc1 = ac.createOscillator()
-  osc1.type = 'sine'
-  osc1.frequency.value = f
+  osc1.type = 'sawtooth'
+  osc1.frequency.value = freq
   const osc2 = ac.createOscillator()
-  osc2.type = 'sine'
-  osc2.frequency.value = f * (1 + SHIMMER)
+  osc2.type = 'sawtooth'
+  osc2.frequency.value = freq * (1 + SHIMMER)
   const d2 = ac.createGain()
   d2.gain.value = 0.35
+
+  // Subtle low-frequency tremolo — the murmur (frequency randomized per note)
+  const tremolo = ac.createGain()
+  tremolo.gain.value = 1 - TREM_DEPTH
+  const lfo = ac.createOscillator()
+  lfo.type = 'sine'
+  lfo.frequency.value = TREM_FREQ + Math.random() * TREM_SPREAD
+  const lfoGain = ac.createGain()
+  lfoGain.gain.value = TREM_DEPTH
+  lfo.connect(lfoGain)
+  lfoGain.connect(tremolo.gain)
 
   const env = ac.createGain()
   const dur = NOTE_LEN_MS / 1000
   env.gain.setValueAtTime(0.0001, t)
-  env.gain.exponentialRampToValueAtTime(1, t + 0.012)
+  env.gain.exponentialRampToValueAtTime(1, t + 0.015)
   env.gain.exponentialRampToValueAtTime(0.0001, t + dur)
 
-  osc1.connect(env)
+  osc1.connect(filter)
   osc2.connect(d2)
-  d2.connect(env)
+  d2.connect(filter)
+  filter.connect(tremolo)
+  tremolo.connect(env)
   env.connect(master)
 
   osc1.start(t)
   osc2.start(t)
+  lfo.start(t)
   osc1.stop(t + dur + 0.02)
   osc2.stop(t + dur + 0.02)
+  lfo.stop(t + dur + 0.02)
+
+  // Vary the echo slightly per note so it is never exactly the same twice
+  if (echo) {
+    echo.wet.gain.setValueAtTime(ECHO_WET, t) // restore the mix (faded on stop)
+    echo.delay.delayTime.setValueAtTime(
+      Math.max(0.02, ECHO_DELAY + (Math.random() * 2 - 1) * ECHO_JITTER), t)
+    echo.feedback.gain.setValueAtTime(
+      Math.max(0, ECHO_FEEDBACK * (1 + (Math.random() * 2 - 1) * ECHO_FB_JITTER)), t)
+  }
 }
 
 // ------------------------------ pitch mapping -------------------------------
@@ -433,7 +496,13 @@ function tick() {
 
       const degrees = getScale().degrees
       const degree = Math.max(0, Math.min(degrees.length - 1, degreeForCps(emaCps) + Math.round(wander + jitter)))
-      playNote(degree, inThinking ? thinkingVol() : userVolume)
+      // Sparing random detune: most notes play in tune, and the notes that
+      // don't get a different small amount (DETUNE_MIN..DETUNE_MAX) each time,
+      // so the pitch drifts organically like a real robot's.
+      const detune = Math.random() < DETUNE_PROB
+        ? 1 + (Math.random() * 2 - 1) * (DETUNE_MIN + Math.random() * (DETUNE_MAX - DETUNE_MIN))
+        : 1
+      playNote(degree, inThinking ? thinkingVol() : userVolume, detune)
     }
     rhythmIndex += 1
   }
@@ -459,6 +528,7 @@ function stopStreaming() {
   // immediate fade — no trailing note, no delay
   const ac = ensureAudio()
   if (ac && master) master.gain.setTargetAtTime(0, ac.currentTime, 0.012)
+  if (ac && echo) echo.wet.gain.setTargetAtTime(0, ac.currentTime, 0.012)
   if (ac && ac.state === 'running') ac.suspend().catch(() => {})
 }
 
@@ -639,6 +709,7 @@ function dispose() {
   }
   const ac = ensureAudio()
   if (ac && master) master.gain.setTargetAtTime(0, ac.currentTime, 0.012)
+  if (ac && echo) echo.wet.gain.setTargetAtTime(0, ac.currentTime, 0.012)
   if (ac && ac.state === 'running') ac.suspend().catch(() => {})
 }
 
